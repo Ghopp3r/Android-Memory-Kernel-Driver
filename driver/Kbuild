@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Kbuild file for the reconstructed Android kernel driver.
+#
+# This file is consumed by the kernel build (KERNELRELEASE != "") via the
+# root Makefile. Do not invoke directly — use `make` in the parent directory.
+#
+# Source layout (relative to $(src) i.e. the driver/ directory):
+#   include/        - public headers shared across subsystems
+#   src/            - all .c subsystem files (one .o per .c)
+
+# -----------------------------------------------------------------------------
+# Module name. DRIVER_NAME is exported by the root Makefile (default
+# "my-driver"). The resulting artefact is $(DRIVER_NAME).ko.
+# -----------------------------------------------------------------------------
+DRIVER_NAME ?= my-driver
+
+obj-m += $(DRIVER_NAME).o
+
+# -----------------------------------------------------------------------------
+# Composite object list. Each entry is a path to a .o (relative to $(src)),
+# implicitly compiled from the matching .c. Names match the IDA binary 1:1
+# where possible (drv_init / read_proxy / sys_read_handler_pre /
+# driver_install_fd_tw_func / etc.).
+# -----------------------------------------------------------------------------
+$(DRIVER_NAME)-objs := \
+	src/lifecycle.o       \
+	src/comm.o            \
+	src/memory.o          \
+	src/vfs_hijack.o      \
+	src/input_synth.o     \
+	src/sensor.o          \
+	src/harvest.o         \
+	src/stealth.o         \
+	src/hook_engine.o     \
+	src/uaccess_target.o  \
+	src/kallsym.o
+
+# -----------------------------------------------------------------------------
+# Compiler flags.
+#   -I$(src)/include - public headers
+#   -I$(src)/src     - intra-subsystem private headers
+#   -Wall            - all reasonable warnings
+#   -Wno-declaration-after-statement
+#                    - kernel <5.10 enables -Wdeclaration-after-statement
+#                      globally; we use mid-block declarations.
+# -----------------------------------------------------------------------------
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/src
+ccflags-y += -Wall
+ccflags-y += -Wno-declaration-after-statement
+ccflags-y += -Wno-unused-function
+ccflags-y += -Wno-unused-variable
+
+# -----------------------------------------------------------------------------
+# Compile-time configuration knobs. Per CLAUDE.md these are the canonical
+# single source for the driver's tunables — no .c/.h file should hard-code
+# any of them.
+#
+#   KCFG_TARGET_PACKAGE - Android package name (e.g. "cent.tmgp.sgame") the
+#                         driver locks onto. Overridable via:
+#                             make TARGET_PKG='"com.example.app"'
+#                         Note the literal double-quotes; they must survive
+#                         shell expansion and reach the preprocessor as a
+#                         C string literal.
+#
+#   KCFG_DRIVER_NAME    - module name as a C string (matches DRIVER_NAME).
+#   KCFG_ANON_INODE_NAME- name passed to anon_inode_getfile (the
+#                         /proc/<pid>/fdinfo "anon_inode:<name>" label).
+#   KCFG_REBOOT_MAGIC   - sentinel magic the reboot()/prctl() handshakes
+#                         look for in regs[0]/regs[1]. uapi.h exposes the
+#                         same value as DRIVER_REBOOT_MAGIC1/2 for the
+#                         userspace client.
+#   KCFG_PRCTL_MAGIC    - same idea for the prctl() fallback handshake.
+# -----------------------------------------------------------------------------
+TARGET_PKG ?= "cent.tmgp.sgame"
+ANON_INODE_NAME ?= "[driver]"
+REBOOT_MAGIC ?= 0x123456u
+PRCTL_MAGIC ?= 0x12345678u
+
+ccflags-y += -DKCFG_TARGET_PACKAGE='$(TARGET_PKG)'
+ccflags-y += -DKCFG_DRIVER_NAME='"$(DRIVER_NAME)"'
+ccflags-y += -DKCFG_ANON_INODE_NAME='$(ANON_INODE_NAME)'
+ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
+ccflags-y += -DKCFG_PRCTL_MAGIC='$(PRCTL_MAGIC)'
+
+# -----------------------------------------------------------------------------
+# Optional feature gates (off by default — uncomment in your local Kbuild or
+# pass on the make command line as `ccflags-y+=-D<FLAG>` to enable).
+# These mirror the gates used by android-wuwa.
+# -----------------------------------------------------------------------------
+# ccflags-y += -DKCFG_HIDE_SELF_MODULE     # active list_del / kobject_del
+# ccflags-y += -DKCFG_BUILD_NO_CFI         # patch CFI helpers with RET
+# ccflags-y += -DKCFG_BUILD_PTE_MAPPING    # PTE-walk write-RO path
+# ccflags-y += -DKCFG_BUILD_HIDE_SIGNAL    # signal-bypass hook

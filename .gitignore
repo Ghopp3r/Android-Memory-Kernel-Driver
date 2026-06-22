@@ -1,0 +1,80 @@
+# --- kernel build artifacts -------------------------------------------------
+*.o
+*.o.*
+*.ko
+*.ko.*
+*.mod
+*.mod.c
+*.mod.o
+.*.cmd
+.*.d
+*.symvers
+Module.symvers
+modules.order
+.tmp_versions/
+.modules.order.cmd
+.Module.symvers.cmd
+*.dwo
+*.lst
+*.s.tmp
+
+# --- C / C++ build artifacts ------------------------------------------------
+*.a
+*.lo
+*.la
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.obj
+*.gch
+*.pch
+*.pdb
+*.ilk
+
+# --- IDE / editor -----------------------------------------------------------
+.vscode/
+.idea/
+*.code-workspace
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Bazel / Kleaf ----------------------------------------------------------
+bazel-*
+MODULE.bazel.lock
+.bazelrc.user
+
+# --- IDA Pro database files -------------------------------------------------
+# These are the volatile per-session database shards. We keep the packed
+# .i64 (commit it explicitly) so analysts can resume from a known state.
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.idb
+# Uncomment the next line if you do NOT want the packed IDB tracked:
+# *.i64
+
+# --- Build / cache / output directories ------------------------------------
+build/
+out/
+dist/
+.cache/
+.ccache/
+.cargo/
+node_modules/
+__pycache__/
+*.pyc
+
+# --- Local secrets / per-developer settings --------------------------------
+.env
+.env.local
+*.local
+.claude/local/
+.codex/local/

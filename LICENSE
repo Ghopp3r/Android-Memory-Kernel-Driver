@@ -1,0 +1,10 @@
+This project is licensed under GPL-2.0-only (matching the kernel module
+license declared by the original binary's modinfo: `license=GPL`).
+
+The full text of the GNU General Public License version 2 is available at:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+SPDX-License-Identifier: GPL-2.0-only
+
+Copyright (C) 2026 reconstructed from publicly distributed prior art.
+Upstream provenance is documented in DRIVER_MODULE.md and docs/analysis/.

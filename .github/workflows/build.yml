@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# CI: build my-driver.ko against every supported Android KMI.
+#
+# Each matrix entry runs inside the matching ghcr.io/ylarod/ddk image, which
+# ships a pre-extracted kernel tree at $KERNEL_SRC. The Makefile picks that
+# up automatically (no flags required).
+#
+# Artefact naming: my-driver-<kmi>.ko (one upload per matrix leg).
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ddk_release:
+        description: 'ghcr.io/ylarod/ddk image tag suffix (release date)'
+        required: false
+        default: '20251016'
+        type: string
+
+jobs:
+  build:
+    name: build ${{ matrix.kmi }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.10
+          - android13-5.15
+          - android14-5.15
+          - android14-6.1
+          - android15-6.6
+          - android16-6.12
+
+    container:
+      image: ghcr.io/ylarod/ddk:${{ matrix.kmi }}-${{ inputs.ddk_release || '20251016' }}
+      options: --privileged
+
+    env:
+      DRIVER_NAME: my-driver
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show build environment
+        working-directory: driver
+        run: |
+          echo "=== KMI:           ${{ matrix.kmi }}"
+          echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251016' }}"
+          echo "=== KERNEL_SRC:    $KERNEL_SRC"
+          echo "=== DRIVER_NAME:   $DRIVER_NAME"
+          uname -a
+          which clang || true
+          clang --version || true
+
+      - name: Build ${{ env.DRIVER_NAME }}.ko
+        working-directory: driver
+        run: |
+          set -eux
+          make -j"$(nproc)"
+          ls -la "${DRIVER_NAME}.ko"
+
+      - name: Stage artefact (rename per-KMI)
+        working-directory: driver
+        run: |
+          set -eux
+          mkdir -p "${GITHUB_WORKSPACE}/out"
+          OUT="${GITHUB_WORKSPACE}/out/${DRIVER_NAME}-${{ matrix.kmi }}.ko"
+          cp "${DRIVER_NAME}.ko" "$OUT"
+          echo "Size (unstripped):  $(du -h "$OUT" | cut -f1)"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip -d "$OUT"
+            echo "Size (stripped -d): $(du -h "$OUT" | cut -f1)"
+          fi
+          ls -la "$OUT"
+
+      - name: Upload ${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+          path: out/${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+          if-no-files-found: error
+          retention-days: 30
