@@ -56,15 +56,16 @@ if (ANDROID)
 endif()
 
 # ---------------------------------------------------------------------------
-# Configurable target package
+# Configurable demo defaults
 # ---------------------------------------------------------------------------
 #
-# The target Android package the client looks for by default when no
-# --target-package argument and no TARGET_PACKAGE env var is set. Override
-# at configure time with -DTARGET_PACKAGE=com.example.game.
+# The Android package and module the demo client offers by default when the
+# interactive prompts are left empty. Override these at configure time.
 #
 set(TARGET_PACKAGE "com.example.game"
     CACHE STRING "Default target package the client will look for")
+set(TARGET_MODULE "libUE4.so"
+    CACHE STRING "Default module name the client will resolve")
 
 # ---------------------------------------------------------------------------
 # Target
@@ -80,7 +81,8 @@ target_include_directories(my-driver-client
 
 target_compile_definitions(my-driver-client
     PRIVATE
-        HACK_CLIENT_TARGET_PACKAGE="${TARGET_PACKAGE}")
+        HACK_CLIENT_TARGET_PACKAGE="${TARGET_PACKAGE}"
+        HACK_CLIENT_TARGET_MODULE="${TARGET_MODULE}")
 
 target_compile_options(my-driver-client
     PRIVATE

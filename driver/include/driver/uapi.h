@@ -8,16 +8,8 @@
 #  include <linux/ioctl.h>
 #else
 #  include <stdint.h>
+#  include <linux/types.h>
 #  include <sys/types.h>
-   /* Provide kernel typedefs so the same struct defs compile in both worlds. */
-   typedef uint64_t __u64;
-   typedef int64_t  __s64;
-   typedef uint32_t __u32;
-   typedef int32_t  __s32;
-   typedef uint16_t __u16;
-   typedef int16_t  __s16;
-   typedef uint8_t  __u8;
-   typedef int8_t   __s8;
 #endif
 
 /* Per CLAUDE.md, the magic-handshake constants are configurable via Kbuild -DKCFG_* knobs (see driver/Kbuild). The DRIVER_* names here are the single shared source consumed by both kernel module and userspace client -- comm.c MUST NOT redefine them. */

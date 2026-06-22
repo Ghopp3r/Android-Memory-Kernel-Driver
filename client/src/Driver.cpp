@@ -206,7 +206,7 @@ bool CDriver::installSigsegvSuppress() {
 
 bool CDriver::touchDown(int slot, int x, int y) {
     drv_touch_inject_req tr{};
-    tr.slot = slot;
+    tr.slot_id = static_cast<uint32_t>(slot);
     tr.x = x;
     tr.y = y;
     drv_ioctl_req req = makeReq(0);
@@ -216,7 +216,7 @@ bool CDriver::touchDown(int slot, int x, int y) {
 
 bool CDriver::touchUp(int slot) {
     drv_touch_inject_req tr{};
-    tr.slot = slot;
+    tr.slot_id = static_cast<uint32_t>(slot);
     drv_ioctl_req req = makeReq(0);
     req.addr = reinterpret_cast<uint64_t>(&tr);
     return doIoctl(DRV_CMD_TOUCH_UP, &req) >= 0;
@@ -224,7 +224,7 @@ bool CDriver::touchUp(int slot) {
 
 bool CDriver::touchMove(int slot, int x, int y) {
     drv_touch_inject_req tr{};
-    tr.slot = slot;
+    tr.slot_id = static_cast<uint32_t>(slot);
     tr.x = x;
     tr.y = y;
     drv_ioctl_req req = makeReq(0);

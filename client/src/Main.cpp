@@ -13,6 +13,14 @@
 
 #include "Driver.h"
 
+#ifndef HACK_CLIENT_TARGET_PACKAGE
+#define HACK_CLIENT_TARGET_PACKAGE "com.example.game"
+#endif
+
+#ifndef HACK_CLIENT_TARGET_MODULE
+#define HACK_CLIENT_TARGET_MODULE "libUE4.so"
+#endif
+
 static std::string prompt(const char* label) {
     std::printf("%s", label);
     std::fflush(stdout);
@@ -76,7 +84,11 @@ static void hexDump16(uint64_t addr, const uint8_t* buf) {
 int main() {
     driver.installHooks();
 
-    std::string targetInput = prompt("Target (pid or package): ");
+    std::string targetPrompt = std::string("Target (pid or package, default ") + HACK_CLIENT_TARGET_PACKAGE + "): ";
+    std::string targetInput = prompt(targetPrompt.c_str());
+    if (targetInput.empty())
+        targetInput = HACK_CLIENT_TARGET_PACKAGE;
+
     pid_t pid = 0;
     if (isAllDigits(targetInput)) {
         pid = static_cast<pid_t>(std::atoi(targetInput.c_str()));
@@ -89,9 +101,10 @@ int main() {
     }
     driver.setTarget(pid);
 
-    std::string moduleName = prompt("Module (default libUE4.so): ");
+    std::string modulePrompt = std::string("Module (default ") + HACK_CLIENT_TARGET_MODULE + "): ";
+    std::string moduleName = prompt(modulePrompt.c_str());
     if (moduleName.empty())
-        moduleName = "libUE4.so";
+        moduleName = HACK_CLIENT_TARGET_MODULE;
 
     auto base = driver.getModuleBase(moduleName);
     if (!base) {
