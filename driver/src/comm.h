@@ -9,8 +9,11 @@
 #include <linux/task_work.h>
 #include <linux/types.h>
 
-#define COMM_REBOOT_MAGIC1 0x123456u
-#define COMM_REBOOT_MAGIC2 0x123456u
+#include <driver/uapi.h>
+
+#define COMM_REBOOT_MAGIC1 DRIVER_REBOOT_MAGIC1
+#define COMM_REBOOT_MAGIC2 DRIVER_REBOOT_MAGIC2
+#define COMM_PRCTL_MAGIC DRIVER_PRCTL_MAGIC
 
 struct driver_install_work {
 	struct callback_head head;
@@ -18,6 +21,7 @@ struct driver_install_work {
 };
 
 int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs);
+int prctl_handler_pre(struct kprobe *p, struct pt_regs *regs);
 
 void driver_install_fd_tw_func(struct callback_head *twork);
 
@@ -26,5 +30,7 @@ long dispatch_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 extern const struct file_operations inofile_fops;
 
 extern struct kprobe reboot_kp;
+extern struct kprobe prctl_kp;
+extern bool prctl_kp_registered;
 
 #endif /* DRIVER_COMM_H */

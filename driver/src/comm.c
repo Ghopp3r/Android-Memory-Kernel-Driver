@@ -81,28 +81,48 @@ struct kprobe reboot_kp = {
 	.pre_handler = reboot_handler_pre,
 };
 
-int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
+struct kprobe prctl_kp = {
+	.symbol_name = "__arm64_sys_prctl",
+	.pre_handler = prctl_handler_pre,
+};
+
+bool prctl_kp_registered;
+
+static int drv_copy_kernel_nofault_compat(void *dst, const void *src, size_t size) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+	return copy_from_kernel_nofault(dst, src, size);
+#else
+	return probe_kernel_read(dst, src, size);
+#endif
+}
+
+static bool drv_read_wrapped_syscall_args(struct pt_regs *regs, unsigned long args[4]) {
+	unsigned long pt_regs_ptr;
+
+	if (!regs)
+		return false;
+
+	pt_regs_ptr = regs->regs[0];
+	if (!pt_regs_ptr)
+		return false;
+
+	return drv_copy_kernel_nofault_compat(args, (const void *)(uintptr_t)pt_regs_ptr, sizeof(unsigned long) * 4) == 0;
+}
+
+static void drv_queue_fd_install(void __user *reply, const char *source) {
 	struct driver_install_work *work;
-	void __user *reply;
-	u32 magic1, magic2;
 
-	(void)p;
+	if (!reply) {
+		pr_drv_warn("%s handshake missing reply pointer\n", source);
+		return;
+	}
 
-	/* arm64 __arm64_sys_reboot takes struct pt_regs*; magics are 32-bit. */
-	magic1 = (u32)regs->regs[0];
-	magic2 = (u32)regs->regs[1];
+	pr_drv("%s handshake hit: pid=%d\n", source, current->pid);
 
-	if (magic1 != COMM_REBOOT_MAGIC1 || magic2 != COMM_REBOOT_MAGIC2)
-		return 0;
-
-	pr_drv("reboot handshake hit: pid=%d\n", current->pid);
-
-	reply = (void __user *)regs->regs[3];
-
-	/* pre-handler runs with preemption disabled; must not sleep */
+	/* pre-handler runs with preemption disabled; must not sleep. */
 	work = kmalloc(sizeof(*work), GFP_ATOMIC | __GFP_HIGH);
 	if (!work)
-		return 0;
+		return;
 
 	work->head.next = NULL;
 	work->head.func = driver_install_fd_tw_func;
@@ -112,6 +132,58 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 		kfree(work);
 		pr_drv_warn("install fd add task_work failed\n");
 	}
+}
+
+int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
+	unsigned long args[4];
+
+	(void)p;
+
+	if (!regs)
+		return 0;
+
+	args[0] = regs->regs[0];
+	args[1] = regs->regs[1];
+	args[2] = regs->regs[2];
+	args[3] = regs->regs[3];
+
+	if ((u32)args[0] != COMM_REBOOT_MAGIC1 || (u32)args[1] != COMM_REBOOT_MAGIC2) {
+		if (!drv_read_wrapped_syscall_args(regs, args))
+			return 0;
+		if ((u32)args[0] != COMM_REBOOT_MAGIC1 || (u32)args[1] != COMM_REBOOT_MAGIC2)
+			return 0;
+		drv_queue_fd_install((void __user *)args[3], "reboot/ptregs");
+		return 0;
+	}
+
+	drv_queue_fd_install((void __user *)args[3], "reboot");
+
+	return 0;
+}
+
+int prctl_handler_pre(struct kprobe *p, struct pt_regs *regs) {
+	unsigned long args[4];
+
+	(void)p;
+
+	if (!regs)
+		return 0;
+
+	args[0] = regs->regs[0];
+	args[1] = regs->regs[1];
+	args[2] = regs->regs[2];
+	args[3] = regs->regs[3];
+
+	if ((u32)args[0] != COMM_PRCTL_MAGIC || (u32)args[1] != COMM_PRCTL_MAGIC) {
+		if (!drv_read_wrapped_syscall_args(regs, args))
+			return 0;
+		if ((u32)args[0] != COMM_PRCTL_MAGIC || (u32)args[1] != COMM_PRCTL_MAGIC)
+			return 0;
+		drv_queue_fd_install((void __user *)args[2], "prctl/ptregs");
+		return 0;
+	}
+
+	drv_queue_fd_install((void __user *)args[2], "prctl");
 
 	return 0;
 }

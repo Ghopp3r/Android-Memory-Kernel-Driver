@@ -10,7 +10,8 @@
 #include <unistd.h>
 #include <utility>
 
-static constexpr unsigned long RebootMagic = 0x123456UL;
+static constexpr unsigned long RebootMagic = DRIVER_REBOOT_MAGIC1;
+static constexpr unsigned long PrctlMagic = DRIVER_PRCTL_MAGIC;
 static constexpr size_t VmaDumpEntries = 1024;
 
 static drv_ioctl_req makeReq(pid_t pid) {
@@ -46,10 +47,18 @@ bool CDriver::open() {
 
     int newFd = -1;
     long rc = ::syscall(SYS_reboot, RebootMagic, RebootMagic, RebootMagic, &newFd);
-    if (rc < 0 && errno != EINVAL)
+    int rebootErrno = errno;
+    if (newFd >= 0) {
+        m_fd = newFd;
+        return true;
+    }
+
+    rc = ::syscall(SYS_prctl, PrctlMagic, PrctlMagic, &newFd, 0, 0);
+    int prctlErrno = errno;
+    if (newFd < 0) {
+        errno = (rc < 0) ? prctlErrno : rebootErrno;
         return false;
-    if (newFd < 0)
-        return false;
+    }
 
     m_fd = newFd;
     return true;

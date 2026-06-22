@@ -64,6 +64,13 @@ int __init init_driver(void) {
 		return ret;
 	}
 
+	ret = register_kprobe(&prctl_kp);
+	if (ret < 0) {
+		pr_drv_warn("register_kprobe (__arm64_sys_prctl) failed: %d\n", ret);
+	} else {
+		prctl_kp_registered = true;
+	}
+
 	conceal_module();
 	return 0;
 }
@@ -72,6 +79,8 @@ void __exit cleanup_driver(void) {
 	pr_drv("driver_unload\n");
 
 	/* conceal_module () makes us unreachable so the loader never invokes this; kept for builds that toggle conceal off. */
+	if (prctl_kp_registered)
+		unregister_kprobe(&prctl_kp);
 	unregister_kprobe(&reboot_kp);
 }
 
