@@ -47,10 +47,7 @@ $(DRIVER_NAME)-objs := \
 # -----------------------------------------------------------------------------
 ccflags-y += -I$(src)/include
 ccflags-y += -I$(src)/src
-ccflags-y += -Wall
 ccflags-y += -Wno-declaration-after-statement
-ccflags-y += -Wno-unused-but-set-variable
-ccflags-y += -Wno-error=unused-but-set-variable
 ccflags-y += -Wno-unused-function
 ccflags-y += -Wno-unused-variable
 

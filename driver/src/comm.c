@@ -17,10 +17,10 @@
 #include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/syscalls.h>
 #include <linux/task_work.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
 #include <linux/vmalloc.h>
 
 #include <driver/types.h>
@@ -36,6 +36,14 @@
 #include "stealth.h"
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
+
+static int drv_close_fd(unsigned int fd) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+	return close_fd(fd);
+#else
+	return __close_fd(current->files, fd);
+#endif
+}
 
 /* Sanity cap on attacker-controlled req.size for the bulk memory cmd kbuf allocations. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Above KMALLOC_MAX_SIZE the slab allocator returns NULL anyway, but a tight cap also prevents sustained mid-sized allocation DoS. */
 #define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
@@ -117,7 +125,7 @@ reply:
 	if (copy_to_user(work->reply, &reply_fd, sizeof(reply_fd)) != 0) {
 		pr_drv_err("install fd reply err\n");
 		if (reply_fd >= 0)
-			ksys_close(reply_fd);
+			drv_close_fd(reply_fd);
 	}
 
 	kfree(work);

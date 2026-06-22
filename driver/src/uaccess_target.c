@@ -187,7 +187,7 @@ zero_tail:
 	return residue;
 }
 
-/* copy_from_user with TLB drain + LDAPR-fenced walk; forces post-write_ro PTE update to retire before next uaccess. @walk_root is the page-walk root, pinned in x8 per the binary. */
+/* copy_from_user with TLB drain + acquire-load fenced walk; forces post-write_ro PTE update to retire before next uaccess. @walk_root is the page-walk root, pinned in x8 per the binary. */
 size_t copy_from_user_tlb_drained(void *to, const void __user *from, size_t n, atomic64_t *walk_root) {
 	register unsigned long _x8 __asm__("x8") = (unsigned long)walk_root;
 	unsigned long sink;
@@ -195,25 +195,25 @@ size_t copy_from_user_tlb_drained(void *to, const void __user *from, size_t n, a
 	asm volatile(
 		"dsb    ish\n\t"
 		"tlbi   vmalle1is\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
 		"dsb    ish\n\t"
 		"tlbi   vaale1is, %[r]\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[r]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
-		"ldapr  %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[r]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
+		"ldar   %[s], [%[s]]\n\t"
 		"dsb    ish\n\t"
 		"isb"
 		: [s] "=&r"(sink)
