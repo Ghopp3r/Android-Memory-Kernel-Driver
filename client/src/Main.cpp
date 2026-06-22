@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -81,6 +82,28 @@ static void hexDump16(uint64_t addr, const uint8_t* buf) {
     std::printf("\n");
 }
 
+static std::optional<uint64_t> parseAddress(const std::string& s) {
+    if (s.empty())
+        return std::nullopt;
+
+    const char* begin = s.c_str();
+    while (*begin == ' ' || *begin == '\t')
+        ++begin;
+    if (*begin == '\0')
+        return std::nullopt;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long value = std::strtoull(begin, &end, 0);
+    if (errno != 0 || end == begin)
+        return std::nullopt;
+    while (*end == ' ' || *end == '\t')
+        ++end;
+    if (*end != '\0' || value == 0)
+        return std::nullopt;
+    return static_cast<uint64_t>(value);
+}
+
 int main() {
     driver.installHooks();
 
@@ -109,9 +132,16 @@ int main() {
     auto base = driver.getModuleBase(moduleName);
     if (!base) {
         std::fprintf(stderr, "Module: %s, Status: not found\n", moduleName.c_str());
-        return 2;
+        std::string baseInput = prompt("Module base (hex, empty to exit): ");
+        base = parseAddress(baseInput);
+        if (!base) {
+            std::fprintf(stderr, "Module base not provided\n");
+            return 2;
+        }
+        std::printf("Module: %s, ManualBase: 0x%llx\n", moduleName.c_str(), static_cast<unsigned long long>(*base));
+    } else {
+        std::printf("Module: %s, Base: 0x%llx\n", moduleName.c_str(), static_cast<unsigned long long>(*base));
     }
-    std::printf("Module: %s, Base: 0x%llx\n", moduleName.c_str(), static_cast<unsigned long long>(*base));
 
     uint8_t firstBytes[16] = {0};
     if (driver.readBytes(*base, firstBytes, sizeof(firstBytes)))

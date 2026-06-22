@@ -111,13 +111,11 @@ bool CDriver::writeBytesVmap(uint64_t addr, const void* in, size_t len) {
 std::optional<uint64_t> CDriver::getModuleBase(const std::string& name) {
     drv_ioctl_req req = makeReq(m_targetPid);
     req.addr = reinterpret_cast<uint64_t>(name.c_str());
-    uint64_t base = 0;
-    req.buf = reinterpret_cast<uint64_t>(&base);
     if (doIoctl(DRV_CMD_GET_MODULE_BASE, &req) < 0)
         return std::nullopt;
-    if (base == 0)
+    if (req.size == 0)
         return std::nullopt;
-    return base;
+    return req.size;
 }
 
 std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
