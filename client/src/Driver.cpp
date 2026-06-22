@@ -121,34 +121,28 @@ std::optional<uint64_t> CDriver::getModuleBase(const std::string& name) {
 std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
     drv_ioctl_req req = makeReq(0);
     req.addr = reinterpret_cast<uint64_t>(comm.c_str());
-    int32_t out = -1;
-    req.buf = reinterpret_cast<uint64_t>(&out);
     if (doIoctl(DRV_CMD_FIND_TASK_BY_COMM, &req) < 0)
         return std::nullopt;
-    if (out <= 0)
+    if (req.size == 0 || req.size > 0x7fffffffULL)
         return std::nullopt;
-    return static_cast<pid_t>(out);
+    return static_cast<pid_t>(req.size);
 }
 
 std::optional<uint64_t> CDriver::getTls() {
     drv_ioctl_req req = makeReq(m_targetPid);
-    uint64_t tls = 0;
-    req.buf = reinterpret_cast<uint64_t>(&tls);
     if (doIoctl(DRV_CMD_GET_TLS, &req) < 0)
         return std::nullopt;
-    if (tls == 0)
+    if (req.size == 0)
         return std::nullopt;
-    return tls;
+    return req.size;
 }
 
 std::optional<uint64_t> CDriver::readVmaCookie(uint64_t addr) {
     drv_ioctl_req req = makeReq(m_targetPid);
     req.addr = addr;
-    uint64_t cookie = 0;
-    req.buf = reinterpret_cast<uint64_t>(&cookie);
     if (doIoctl(DRV_CMD_READ_VMA_COOKIE, &req) < 0)
         return std::nullopt;
-    return cookie;
+    return req.size;
 }
 
 bool CDriver::hideKgsl() {

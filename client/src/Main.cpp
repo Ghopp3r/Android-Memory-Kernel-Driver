@@ -144,17 +144,34 @@ int main() {
     }
 
     uint8_t firstBytes[16] = {0};
-    if (driver.readBytes(*base, firstBytes, sizeof(firstBytes)))
+    if (driver.readBytes(*base, firstBytes, sizeof(firstBytes))) {
+        std::printf("Read16: ok\n");
         hexDump16(*base, firstBytes);
+    } else {
+        std::printf("Read16: failed at 0x%llx\n", static_cast<unsigned long long>(*base));
+    }
 
-    if (auto tls = driver.getTls())
+    if (auto tls = driver.getTls()) {
         std::printf("Tls: 0x%llx\n", static_cast<unsigned long long>(*tls));
+    } else {
+        std::printf("Tls: unavailable\n");
+    }
 
-    if (auto magic = driver.read<uint32_t>(*base))
+    if (auto magic = driver.read<uint32_t>(*base)) {
         std::printf("ElfMagic: 0x%08x\n", *magic);
+    } else {
+        std::printf("ElfMagic: read failed\n");
+    }
 
-    if (driver.touchDown(0, 100, 100) && driver.touchUp(0))
+    bool touchDownOk = driver.touchDown(0, 100, 100);
+    bool touchUpOk = touchDownOk && driver.touchUp(0);
+    if (touchDownOk && touchUpOk) {
         std::printf("Touch: ok, Slot: 0, At: (100,100)\n");
+    } else {
+        std::printf("Touch: failed, Down: %s, Up: %s\n", touchDownOk ? "ok" : "failed", touchUpOk ? "ok" : "skipped");
+    }
+
+    std::printf("Done\n");
 
     return 0;
 }
