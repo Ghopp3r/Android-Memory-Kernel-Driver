@@ -43,6 +43,10 @@ static bool arm64_force_sig_fault_kp_is_registered;
 
 static hook_t do_page_fault_hook;
 
+static noinline __nocfi void drv_call_do_page_fault(void (*fn)(unsigned long addr, unsigned int esr, struct pt_regs *regs), unsigned long addr, unsigned int esr, struct pt_regs *regs) {
+	fn(addr, esr, regs);
+}
+
 static struct kprobe arm64_force_sig_fault_kp = {
 	.symbol_name = "arm64_force_sig_fault",
 	.pre_handler = arm64_force_sig_fault_pre,
@@ -130,8 +134,8 @@ tail_call:
 	if (!tail)
 		return;
 
-	/* Trampoline buffer has no KCFI type-id prefix word; route the indirect call through DRV_NOCFI_CALL so the compiler-emitted KCFI check (CONFIG_CFI_CLANG=y on GKI 6.6) does not trap with BRK #0x8228. */
-	DRV_NOCFI_CALL(tail, addr, esr, regs);
+	/* Trampoline buffer has no KCFI type-id prefix word; route the indirect call through a __nocfi wrapper so CONFIG_CFI_CLANG does not trap on the relocated prologue. */
+	drv_call_do_page_fault(tail, addr, esr, regs);
 }
 
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {

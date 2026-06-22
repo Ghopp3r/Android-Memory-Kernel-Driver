@@ -17,6 +17,7 @@
 #include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/syscalls.h>
 #include <linux/task_work.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -116,7 +117,7 @@ reply:
 	if (copy_to_user(work->reply, &reply_fd, sizeof(reply_fd)) != 0) {
 		pr_drv_err("install fd reply err\n");
 		if (reply_fd >= 0)
-			close_fd(reply_fd);
+			ksys_close(reply_fd);
 	}
 
 	kfree(work);

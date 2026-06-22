@@ -2,6 +2,7 @@
 /* gyro/accelerometer sample spoofing via uprobe. */
 
 #include <linux/dcache.h>
+#include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/namei.h>
 #include <linux/path.h>
@@ -29,6 +30,17 @@ static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs)
 static struct uprobe_consumer uc = {
 	.handler = handler_pre_thunk,
 };
+
+static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+	struct uprobe *uprobe;
+
+	uprobe = uprobe_register(inode, offset, 0, consumer);
+	return PTR_ERR_OR_ZERO(uprobe);
+#else
+	return uprobe_register(inode, offset, consumer);
+#endif
+}
 
 /* Pure-integer IEEE-754 binary32 add; kernel FPSIMD unavailable in uprobe pre-handler. */
 /* Quirks preserved: NaN -> +qNaN 0x7FFFFFFF, exact cancellation -> +0, RNE, implicit-1 at bit 30. */
@@ -318,7 +330,7 @@ int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 
 	inode = dentry->d_inode;
 
-	ret = uprobe_register(inode, probe_offset, &uc);
+	ret = drv_uprobe_register(inode, probe_offset, &uc);
 	if (ret != 0)
 		pr_drv_err("uprobe_register failed: %d\n", ret);
 

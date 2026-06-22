@@ -32,6 +32,10 @@ static DEFINE_MUTEX(install_lock);
 typedef void(*input_handle_event_fn_t)(struct input_dev *dev, unsigned int type, unsigned int code, int value);
 static input_handle_event_fn_t input_handle_event_ptr;
 
+static noinline __nocfi void drv_call_input_handle_event(input_handle_event_fn_t fn, struct input_dev *dev, unsigned int type, unsigned int code, int value) {
+	fn(dev, type, code, value);
+}
+
 /* Caller must hold drv.pool->lock. */
 static inline void pool_push(u32 type, u32 code, s32 value) {
 	struct evpool *p = drv.pool;
@@ -90,8 +94,8 @@ void handle_cache_events(struct input_dev *idev) {
 		if (!test_bit(ev->type, idev->evbit))
 			continue;
 
-		/* kCFI: input_handle_event_ptr is a kallsyms-resolved function pointer. Even though the typedef matches the kernel prototype on 6.6, route the call through DRV_NOCFI_CALL to match the discipline used elsewhere in the driver (kallsym.c, hook_engine.c) and to stay safe across CFI rebuilds. */
-		DRV_NOCFI_CALL(input_handle_event_ptr, idev, ev->type, ev->code, ev->value);
+		/* kCFI: input_handle_event_ptr is kallsyms-resolved; Android ACK exposes __nocfi as a function attribute, so keep the indirect call inside a tiny wrapper. */
+		drv_call_input_handle_event(input_handle_event_ptr, idev, ev->type, ev->code, ev->value);
 	}
 
 	p->count = 0;

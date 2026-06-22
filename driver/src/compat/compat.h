@@ -35,7 +35,7 @@
        for ((vma) = (mm)->mmap; (vma); (vma) = (vma)->vm_next)
 #endif
 
-/* CFI-safe wrapper for indirect calls through kallsyms-resolved function pointers. <linux/cfi.h> provides a no-op __nocfi on non-CFI builds (5.13+); shim for older kernels. */
+/* CFI-safe helpers for indirect calls through kallsyms-resolved function pointers. <linux/cfi.h> provides runtime CFI helpers on 5.13+; compiler-clang.h defines __nocfi as a function attribute when KCFI is enabled. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
 #  include <linux/cfi.h>
 #endif
@@ -43,10 +43,7 @@
 #  define __nocfi
 #endif
 
-#define DRV_NOCFI_CALL(fn, ...) ({ \
-    __nocfi typeof(fn) __drv_fn = (fn); \
-    __drv_fn(__VA_ARGS__); \
-})
+#define DRV_NOCFI_CALL(fn, ...) (fn)(__VA_ARGS__)
 
 /* kallsyms_lookup_name was unexported in v5.7 (commit 0bd476e6c671). All our targets are >= 5.10 so the kprobe-trampoline path is always taken; the gate is kept as a guard for any future down-rev. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)

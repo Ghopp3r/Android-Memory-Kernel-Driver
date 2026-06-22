@@ -8,7 +8,10 @@
 #include <linux/fs.h>
 #include <linux/gfp.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 #include <linux/maple_tree.h>
+#endif
 #include <linux/mempolicy.h>
 #include <linux/mm.h>
 #include <linux/mm_types.h>
@@ -28,7 +31,6 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
-#include <linux/version.h>
 #include <linux/vmalloc.h>
 
 #include <asm/cacheflush.h>
