@@ -58,6 +58,21 @@ static int drv_task_work_add(struct task_struct *task, struct callback_head *wor
 	return drv_call_task_work_add(task_work_add_ptr, task, work, notify);
 }
 
+/* Pre-resolve task_work_add at module init from process context. Without this
+   the first magic reboot/prctl handshake hits the lazy kallsym_lookup branch
+   from inside the kprobe pre-handler — register_kprobe there sleeps in atomic
+   context (mutex_lock(&kprobe_mutex) + stop_machine). */
+int comm_warm_symbols(void) {
+	if (!task_work_add_ptr) {
+		task_work_add_ptr = (task_work_add_fn_t)kallsym_lookup("task_work_add");
+		if (!task_work_add_ptr) {
+			pr_drv_err("comm_warm_symbols: task_work_add not found\n");
+			return -ENOENT;
+		}
+	}
+	return 0;
+}
+
 static int drv_close_fd(unsigned int fd) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	return close_fd(fd);

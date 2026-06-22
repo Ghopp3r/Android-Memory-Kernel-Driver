@@ -15,14 +15,14 @@
 #include <driver/types.h>
 
 #include "comm.h"
+#include "kallsym.h"
 #include "lifecycle.h"
 #include "log.h"
 
 struct drv_state drv;
 
-/* TTBR1_EL1[47:12] holds the swapper_pg_dir PA (low 12 bits zero, high bits store the ASID). 0x7FFFFFF000 masks both away. memstart_addr is the kernel's PA base; (PA - memstart_addr) | PAGE_OFFSET is the open-coded __va () the binary uses. */
+/* TTBR1_EL1[47:12] holds the swapper_pg_dir PA (low 12 bits zero, high bits store the ASID). 0x7FFFFFF000 masks both away. The PA -> VA translation goes through the kernel's phys_to_virt() so it honours vabits_actual; the binary's hand-rolled `(pa - memstart) | 0xFFFFFF80_00000000` was specific to a VA_BITS=40 layout and lands in unmapped TTBR1 space on standard 39-bit GKI builds. */
 #define DRV_TTBR1_PA_MASK 0x7FFFFFF000ULL
-#define DRV_LINEAR_MAP_OFFSET 0xFFFFFF8000000000ULL
 
 /* Initialise drv.m_page_level and drv.m_pgd_va from TCR_EL1 / TTBR1_EL1 -- the values the binary captures at dispatch_ioctl case 0xD1 (DRV_CMD_INSTALL_HOOKS). We compute them once at module init so write_ro_memory (and every hook_install path) sees them populated regardless of which ioctl arrives first. T0SZ is TCR_EL1[21:16]; m_page_level = (60 - T0SZ) / 9 == ceil((48 - T0SZ) / 9). For VA_BITS=39 (Android 6.6 typical) T0SZ=25 -> level_count=3 (PUD->PMD->PTE). */
 static void mm_globals_init(void) {
@@ -32,7 +32,7 @@ static void mm_globals_init(void) {
 	u64 pgd_pa = ttbr1 & DRV_TTBR1_PA_MASK;
 
 	drv.m_page_level = (60u - t0sz) / 9u;
-	drv.m_pgd_va = (pgd_pa - (u64)memstart_addr) | DRV_LINEAR_MAP_OFFSET;
+	drv.m_pgd_va = (u64)(uintptr_t)phys_to_virt(pgd_pa);
 }
 
 /* WARNING: touches the global modules list (mod->list) and modules_kset list (mod->mkobj.kobj.entry) without holding module_mutex / modules_kset->list_lock. The original .ko performs the same unlocked mutation; we preserve that 1:1. In practice do_init_module() runs under module_mutex on most 6.x kernels so the race is narrow, but that is not a published contract -- treat as a known on-spec hazard against concurrent insmod/rmmod. */
@@ -57,6 +57,19 @@ int __init init_driver(void) {
 
 	/* Capture swapper_pg_dir + pagewalk depth before any hook path can run -- write_ro_memory's level_count==0 guard would silently no-op every patch otherwise. */
 	mm_globals_init();
+
+	/* Resolve kallsyms_lookup_name + every kallsym-shimmed function pointer that a kprobe pre-handler may need (currently just task_work_add). Done here, in process context, so the prctl/reboot pre-handlers never re-enter register_kprobe in atomic context. */
+	ret = kallsym_init();
+	if (ret < 0) {
+		pr_drv_err("kallsym_init failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = comm_warm_symbols();
+	if (ret < 0) {
+		pr_drv_err("comm_warm_symbols failed: %d\n", ret);
+		return ret;
+	}
 
 	ret = register_kprobe(&reboot_kp);
 	if (ret < 0) {

@@ -48,10 +48,9 @@
 #include "memory.h"
 #include "uaccess_target.h"
 
-/* ARM64 pagewalk arithmetic constants — invariant across the supported kernel range. */
+/* ARM64 pagewalk arithmetic constants — invariant across the supported kernel range. PAGE_OFFSET is intentionally NOT hardcoded; phys_to_virt() honours vabits_actual. The binary's `(pa - memstart) | 0xFFFFFF80_00000000` was specific to a VA_BITS=40 layout and walks garbage on standard 39-bit GKI 6.6 builds (which is exactly the failure mode in pstore: write_ro_memory's PTE flip lands on the wrong leaf and the subsequent byte-store faults on the still-RO target). */
 #define DRV_PTE_OA_MASK 0x0000007FFFFFF000ULL
 #define DRV_PTE_PA_MASK 0x0000FFFFFFFFF000ULL
-#define DRV_PAGE_OFFSET 0xFFFFFF8000000000ULL
 /* 512 GiB user-space limit on this kernel. */
 #define DRV_TASK_SIZE_64 0x0000008000000000ULL
 /* Strip ARMv8 TBI / PAC byte from a user VA before handing to uaccess. */
@@ -69,7 +68,7 @@ static u32 dcache_line_size_vmap;
 
 extern bool arm64_use_ng_mappings;
 
-/* memstart_addr is declared as `extern s64` by <asm/memory.h>; use it directly (cast to u64 at the use sites for the open-coded phys_to_virt formula). */
+/* phys_to_virt() lives in <asm/memory.h>; honours vabits_actual so the linear-map VA is correct on every supported KMI without per-version PAGE_OFFSET constants. */
 
 static inline u32 drv_ctr_dcache_line_size(void) {
 	u64 ctr = read_sysreg(ctr_el0);
@@ -113,7 +112,7 @@ static void drv_flush_dcache_range(u64 va, size_t len, u32 *cache_slot) {
 }
 
 static inline u64 drv_lm_va_from_phys(u64 phys) {
-	return ((phys & DRV_PTE_OA_MASK) - (u64)memstart_addr) | DRV_PAGE_OFFSET;
+	return (u64)(uintptr_t)phys_to_virt(phys & DRV_PTE_OA_MASK);
 }
 
 static bool drv_section_online(u64 page_pa) {
@@ -495,7 +494,7 @@ u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
 					break;
 				}
 
-				table = (next_pa - (u64)memstart_addr) | DRV_PAGE_OFFSET;
+				table = (u64)(uintptr_t)phys_to_virt(next_pa);
 				mask_width += 9;
 				shift -= 9;
 			}
