@@ -26,16 +26,37 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
+#include "compat/compat.h"
 #include "comm.h"
 #include "harvest.h"
 #include "hook_engine.h"
 #include "input_synth.h"
+#include "kallsym.h"
 #include "log.h"
 #include "memory.h"
 #include "sensor.h"
 #include "stealth.h"
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
+
+typedef int (*task_work_add_fn_t)(struct task_struct *task, struct callback_head *work, enum task_work_notify_mode notify);
+static task_work_add_fn_t task_work_add_ptr;
+
+static noinline __nocfi int drv_call_task_work_add(task_work_add_fn_t fn, struct task_struct *task, struct callback_head *work, enum task_work_notify_mode notify) {
+	return fn(task, work, notify);
+}
+
+static int drv_task_work_add(struct task_struct *task, struct callback_head *work, enum task_work_notify_mode notify) {
+	if (!task_work_add_ptr) {
+		task_work_add_ptr = (task_work_add_fn_t)kallsym_lookup("task_work_add");
+		if (!task_work_add_ptr) {
+			pr_drv_err("task_work_add not found\n");
+			return -ENOENT;
+		}
+	}
+
+	return drv_call_task_work_add(task_work_add_ptr, task, work, notify);
+}
 
 static int drv_close_fd(unsigned int fd) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
@@ -85,7 +106,7 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	work->head.func = driver_install_fd_tw_func;
 	work->reply = reply;
 
-	if (task_work_add(current, &work->head, TWA_RESUME) != 0) {
+	if (drv_task_work_add(current, &work->head, TWA_RESUME) != 0) {
 		kfree(work);
 		pr_drv_warn("install fd add task_work failed\n");
 	}

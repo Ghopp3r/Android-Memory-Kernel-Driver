@@ -15,6 +15,8 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
+#include "compat/compat.h"
+#include "kallsym.h"
 #include "log.h"
 #include "sensor.h"
 
@@ -31,16 +33,48 @@ static struct uprobe_consumer uc = {
 	.handler = handler_pre_thunk,
 };
 
-static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+typedef struct uprobe *(*uprobe_register_fn_t)(struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *consumer);
+static uprobe_register_fn_t uprobe_register_ptr;
+
+static noinline __nocfi struct uprobe *drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *consumer) {
+	return fn(inode, offset, ref_ctr_offset, consumer);
+}
+
+static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
 	struct uprobe *uprobe;
 
-	uprobe = uprobe_register(inode, offset, 0, consumer);
+	if (!uprobe_register_ptr) {
+		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
+		if (!uprobe_register_ptr) {
+			pr_drv_err("uprobe_register not found\n");
+			return -ENOENT;
+		}
+	}
+
+	uprobe = drv_call_uprobe_register(uprobe_register_ptr, inode, offset, 0, consumer);
 	return PTR_ERR_OR_ZERO(uprobe);
-#else
-	return uprobe_register(inode, offset, consumer);
-#endif
 }
+#else
+typedef int (*uprobe_register_fn_t)(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer);
+static uprobe_register_fn_t uprobe_register_ptr;
+
+static noinline __nocfi int drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+	return fn(inode, offset, consumer);
+}
+
+static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+	if (!uprobe_register_ptr) {
+		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
+		if (!uprobe_register_ptr) {
+			pr_drv_err("uprobe_register not found\n");
+			return -ENOENT;
+		}
+	}
+
+	return drv_call_uprobe_register(uprobe_register_ptr, inode, offset, consumer);
+}
+#endif
 
 /* Pure-integer IEEE-754 binary32 add; kernel FPSIMD unavailable in uprobe pre-handler. */
 /* Quirks preserved: NaN -> +qNaN 0x7FFFFFFF, exact cancellation -> +0, RNE, implicit-1 at bit 30. */
