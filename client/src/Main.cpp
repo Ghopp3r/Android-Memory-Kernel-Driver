@@ -105,7 +105,16 @@ static std::optional<uint64_t> parseAddress(const std::string& s) {
 }
 
 int main() {
-    driver.installHooks();
+    if (!driver.open()) {
+        std::fprintf(stderr, "Driver open: failed, errno=%d (%s)\n", errno, std::strerror(errno));
+        std::fprintf(stderr, "Check dmesg for \"fd installed\" after running the client.\n");
+        return 3;
+    }
+
+    if (driver.installHooks())
+        std::printf("InstallHooks: ok\n");
+    else
+        std::printf("InstallHooks: failed\n");
 
     std::string targetPrompt = std::string("Target (pid or package, default ") + HACK_CLIENT_TARGET_PACKAGE + "): ";
     std::string targetInput = prompt(targetPrompt.c_str());

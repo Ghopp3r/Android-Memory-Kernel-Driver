@@ -95,6 +95,8 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	if (magic1 != COMM_REBOOT_MAGIC1 || magic2 != COMM_REBOOT_MAGIC2)
 		return 0;
 
+	pr_drv("reboot handshake hit: pid=%d\n", current->pid);
+
 	reply = (void __user *)regs->regs[3];
 
 	/* pre-handler runs with preemption disabled; must not sleep */
