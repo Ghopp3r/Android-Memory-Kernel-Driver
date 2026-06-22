@@ -10,16 +10,18 @@
 #         -DANDROID_PLATFORM=android-30
 #   cmake --build build-android -j
 #
-# Build (host, for type-checking only -- the reboot() handshake will obviously
-# not produce a useful fd on a desktop Linux box):
-#
-#   cmake -S client -B build && cmake --build build -j
-#
 cmake_minimum_required(VERSION 3.16)
 
 project(my-driver-client
     LANGUAGES CXX
     DESCRIPTION "Userspace driver for my-driver.ko (Android arm64)")
+
+if (NOT ANDROID)
+    message(FATAL_ERROR
+        "my-driver-client is Android-only. Configure with the Android NDK "
+        "toolchain, e.g. -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake "
+        "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30")
+endif()
 
 # ---------------------------------------------------------------------------
 # Standard / warnings
@@ -37,23 +39,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Android NDK awareness
 # ---------------------------------------------------------------------------
-#
-# We don't *require* the NDK -- the code compiles cleanly with any host
-# C++17 compiler -- but if the caller forgot to pass a toolchain and the
-# ANDROID_NDK env var is set, give them a friendly nudge.
-#
-if (NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{ANDROID_NDK})
-    message(STATUS
-        "ANDROID_NDK env var is set ($ENV{ANDROID_NDK}) but no toolchain file "
-        "was provided. To cross-compile for Android, re-run with:")
-    message(STATUS
-        "  -DCMAKE_TOOLCHAIN_FILE=$ENV{ANDROID_NDK}/build/cmake/android.toolchain.cmake "
-        "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30")
-endif()
-
-if (ANDROID)
-    message(STATUS "Building for Android (ABI=${ANDROID_ABI}, platform=${ANDROID_PLATFORM})")
-endif()
+message(STATUS "Building for Android (ABI=${ANDROID_ABI}, platform=${ANDROID_PLATFORM})")
 
 # ---------------------------------------------------------------------------
 # Configurable demo defaults
@@ -62,9 +48,9 @@ endif()
 # The Android package and module the demo client offers by default when the
 # interactive prompts are left empty. Override these at configure time.
 #
-set(TARGET_PACKAGE "com.example.game"
+set(TARGET_PACKAGE "com.test.app"
     CACHE STRING "Default target package the client will look for")
-set(TARGET_MODULE "libUE4.so"
+set(TARGET_MODULE "libexample.so"
     CACHE STRING "Default module name the client will resolve")
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,10 @@ static constexpr unsigned long RebootMagic = DRIVER_REBOOT_MAGIC1;
 static constexpr unsigned long PrctlMagic = DRIVER_PRCTL_MAGIC;
 static constexpr size_t VmaDumpEntries = 1024;
 
+#ifndef DRIVER_ENABLE_REBOOT_HANDSHAKE
+#define DRIVER_ENABLE_REBOOT_HANDSHAKE 0
+#endif
+
 static drv_ioctl_req makeReq(pid_t pid) {
     drv_ioctl_req r{};
     r.pid = static_cast<uint32_t>(pid);
@@ -46,22 +50,30 @@ bool CDriver::open() {
         return true;
 
     int newFd = -1;
-    long rc = ::syscall(SYS_reboot, RebootMagic, RebootMagic, RebootMagic, &newFd);
-    int rebootErrno = errno;
+    long rc = ::syscall(SYS_prctl, PrctlMagic, PrctlMagic, &newFd, 0, 0);
+    int prctlErrno = errno;
     if (newFd >= 0) {
         m_fd = newFd;
         return true;
     }
 
-    rc = ::syscall(SYS_prctl, PrctlMagic, PrctlMagic, &newFd, 0, 0);
-    int prctlErrno = errno;
+#if DRIVER_ENABLE_REBOOT_HANDSHAKE
+    newFd = -1;
+    rc = ::syscall(SYS_reboot, RebootMagic, RebootMagic, RebootMagic, &newFd);
+    int rebootErrno = errno;
     if (newFd < 0) {
-        errno = (rc < 0) ? prctlErrno : rebootErrno;
+        errno = (rc < 0) ? rebootErrno : prctlErrno;
         return false;
     }
 
     m_fd = newFd;
     return true;
+#else
+    (void)rc;
+    (void)RebootMagic;
+    errno = prctlErrno;
+    return false;
+#endif
 }
 
 void CDriver::close() {

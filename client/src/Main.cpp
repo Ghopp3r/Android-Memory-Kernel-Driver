@@ -43,6 +43,11 @@ static bool isAllDigits(const std::string& s) {
     return true;
 }
 
+static bool promptYesNo(const char* label) {
+    std::string answer = prompt(label);
+    return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES";
+}
+
 static std::optional<pid_t> resolvePackageToPid(const std::string& pkg) {
     DIR* d = ::opendir("/proc");
     if (!d)
@@ -110,11 +115,16 @@ int main() {
         std::fprintf(stderr, "Check dmesg for \"fd installed\" after running the client.\n");
         return 3;
     }
+    std::printf("Driver open: ok\n");
 
-    if (driver.installHooks())
-        std::printf("InstallHooks: ok\n");
-    else
-        std::printf("InstallHooks: failed\n");
+    if (promptYesNo("Install hooks? [y/N]: ")) {
+        if (driver.installHooks())
+            std::printf("InstallHooks: ok\n");
+        else
+            std::printf("InstallHooks: failed\n");
+    } else {
+        std::printf("InstallHooks: skipped\n");
+    }
 
     std::string targetPrompt = std::string("Target (pid or package, default ") + HACK_CLIENT_TARGET_PACKAGE + "): ";
     std::string targetInput = prompt(targetPrompt.c_str());
@@ -172,12 +182,16 @@ int main() {
         std::printf("ElfMagic: read failed\n");
     }
 
-    bool touchDownOk = driver.touchDown(0, 100, 100);
-    bool touchUpOk = touchDownOk && driver.touchUp(0);
-    if (touchDownOk && touchUpOk) {
-        std::printf("Touch: ok, Slot: 0, At: (100,100)\n");
+    if (promptYesNo("Inject test touch? [y/N]: ")) {
+        bool touchDownOk = driver.touchDown(0, 100, 100);
+        bool touchUpOk = touchDownOk && driver.touchUp(0);
+        if (touchDownOk && touchUpOk) {
+            std::printf("Touch: ok, Slot: 0, At: (100,100)\n");
+        } else {
+            std::printf("Touch: failed, Down: %s, Up: %s\n", touchDownOk ? "ok" : "failed", touchUpOk ? "ok" : "skipped");
+        }
     } else {
-        std::printf("Touch: failed, Down: %s, Up: %s\n", touchDownOk ? "ok" : "failed", touchUpOk ? "ok" : "skipped");
+        std::printf("Touch: skipped\n");
     }
 
     std::printf("Done\n");
