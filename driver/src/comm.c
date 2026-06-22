@@ -81,7 +81,7 @@ static int drv_close_fd(unsigned int fd) {
 #endif
 }
 
-/* Sanity cap on attacker-controlled req.size for the bulk memory cmd kbuf allocations. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Above KMALLOC_MAX_SIZE the slab allocator returns NULL anyway, but a tight cap also prevents sustained mid-sized allocation DoS. */
+/* Sanity cap on attacker-controlled req.size for the bulk memory cmd transfers. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Bounding the per-ioctl byte count also caps the mmap_read_lock hold time on the target. */
 #define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
 
 /* .owner=THIS_MODULE pins module text for as long as any client holds the fd. */
@@ -300,94 +300,53 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		return 0;
 
 	switch (cmd) {
-	case DRV_CMD_READ_MEM_LINEAR: {
-		void *kbuf;
-
+	/* {read,write}_process_memory_{linear,vmap} already handle the user-side
+	   buffer themselves via copy_to_user/copy_from_user under the target's
+	   mmap_read_lock. The original .ko hands req.buf straight through; an
+	   earlier reconstruction tried to add a kvmalloc kernel-bounce buffer but
+	   never adjusted the inner functions' drv_user_ptr_in_range() guard,
+	   which rejects every kernel pointer and silently returns -EFAULT —
+	   making req.size==0 surface as Read16/ElfMagic failures on the client. */
+	case DRV_CMD_READ_MEM_LINEAR:
 		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
 			break;
-
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (!mm)
 			break;
-
-		kbuf = kvmalloc(req.size, GFP_KERNEL);
-		if (!kbuf)
-			break;
-
-		rc = read_process_memory_linear(mm, req.addr, kbuf, req.size);
-		if (rc == 0) {
-			if (copy_to_user((void __user *)(uintptr_t)req.buf, kbuf, req.size) == 0)
-				result = req.size;
-		}
-		kvfree(kbuf);
+		rc = read_process_memory_linear(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
+		if (rc == 0)
+			result = req.size;
 		break;
-	}
-	case DRV_CMD_WRITE_MEM_LINEAR: {
-		void *kbuf;
-
+	case DRV_CMD_WRITE_MEM_LINEAR:
 		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
 			break;
-
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (!mm)
 			break;
-
-		kbuf = kvmalloc(req.size, GFP_KERNEL);
-		if (!kbuf)
-			break;
-
-		if (copy_from_user(kbuf, (void __user *)(uintptr_t)req.buf, req.size) == 0) {
-			rc = write_process_memory_linear(mm, req.addr, kbuf, req.size);
-			if (rc == 0)
-				result = req.size;
-		}
-		kvfree(kbuf);
+		rc = write_process_memory_linear(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
+		if (rc == 0)
+			result = req.size;
 		break;
-	}
-	case DRV_CMD_READ_MEM_VMAP: {
-		void *kbuf;
-
+	case DRV_CMD_READ_MEM_VMAP:
 		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
 			break;
-
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (!mm)
 			break;
-
-		kbuf = kvmalloc(req.size, GFP_KERNEL);
-		if (!kbuf)
-			break;
-
-		rc = read_process_memory_vmap(mm, req.addr, kbuf, req.size);
-		if (rc == 0) {
-			if (copy_to_user((void __user *)(uintptr_t)req.buf, kbuf, req.size) == 0)
-				result = req.size;
-		}
-		kvfree(kbuf);
+		rc = read_process_memory_vmap(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
+		if (rc == 0)
+			result = req.size;
 		break;
-	}
-	case DRV_CMD_WRITE_MEM_VMAP: {
-		void *kbuf;
-
+	case DRV_CMD_WRITE_MEM_VMAP:
 		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
 			break;
-
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (!mm)
 			break;
-
-		kbuf = kvmalloc(req.size, GFP_KERNEL);
-		if (!kbuf)
-			break;
-
-		if (copy_from_user(kbuf, (void __user *)(uintptr_t)req.buf, req.size) == 0) {
-			rc = write_process_memory_vmap(mm, req.addr, kbuf, req.size);
-			if (rc == 0)
-				result = req.size;
-		}
-		kvfree(kbuf);
+		rc = write_process_memory_vmap(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
+		if (rc == 0)
+			result = req.size;
 		break;
-	}
 	case DRV_CMD_GET_MODULE_BASE: {
 		char name[256];
 		long nread;
