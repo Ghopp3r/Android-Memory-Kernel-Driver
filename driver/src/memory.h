@@ -24,7 +24,20 @@ int kernel_rw(u64 kva, void *buf, size_t len, int do_write);
 
 int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, unsigned int count);
 
-/* Per 4K chunk: walks m_pgd_va, clears PTE_RDONLY + sets PTE_DBM, byte-copies, then DSB+TLBI+IC IALLUIS+ISB and restores the original PTE. NOT stop_machine'd — caller ensures target VA is quiescent. */
+/* Resolve aarch64_insn_patch_text_nosync via kallsyms. Called once from
+   lifecycle.c init_driver() AFTER kallsym_init(). Non-fatal on miss:
+   write_ro_memory falls back to the legacy PTE-flip path (only safe on
+   kernels that do NOT map text with PTE_CONT). */
+int memory_init(void);
+
+/* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync via kallsym
+   (FIX_TEXT_POKE0, non-CONT fixmap slot — architecturally safe on Android 15
+   / 6.6 GKI which maps .text with PTE_CONT). Fallback: legacy bespoke PGD
+   walk + AP[2]/DBM flip + per-VA TLBI (only safe when target VA is NOT in a
+   PTE_CONT block, e.g. byte-granular .rodata writes on non-hardened kernels).
+   In-tree callers (hook_install / hook_remove) always pass 4-byte aligned
+   dst + src + len, so the fast path is taken in production. NOT
+   stop_machine'd — caller ensures target VA is quiescent. */
 u64 write_ro_memory(u64 dst_kva, const void *src, u64 len);
 
 u64 process_get_module_base(struct task_struct *task, const char *module_name);

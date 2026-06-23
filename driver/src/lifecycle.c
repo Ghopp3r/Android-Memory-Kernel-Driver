@@ -18,6 +18,7 @@
 #include "kallsym.h"
 #include "lifecycle.h"
 #include "log.h"
+#include "memory.h"
 
 struct drv_state drv;
 
@@ -64,6 +65,9 @@ int __init init_driver(void) {
 		pr_drv_err("kallsym_init failed: %d\n", ret);
 		return ret;
 	}
+
+	/* Resolve the kernel's text patcher (aarch64_insn_patch_text_nosync) BEFORE any hook_install path can run. Non-fatal: write_ro_memory falls back to the legacy bespoke PTE-flip on miss. */
+	(void)memory_init();
 
 	ret = comm_warm_symbols();
 	if (ret < 0) {

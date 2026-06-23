@@ -43,7 +43,15 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
+#include <linux/cfi.h>
+#endif
+#ifndef __nocfi
+#define __nocfi
+#endif
+
 #include "compat/compat.h"
+#include "kallsym.h"
 #include "log.h"
 #include "memory.h"
 #include "uaccess_target.h"
@@ -67,6 +75,41 @@ static u32 dcache_line_size_linear;
 static u32 dcache_line_size_vmap;
 
 extern bool arm64_use_ng_mappings;
+
+/* Resolved once at module init via kallsym_lookup. The kernel's own
+   self-modifying-text primitive: installs the target PFN in FIX_TEXT_POKE0
+   (a single 4 KiB fixmap slot, allocated WITHOUT PTE_CONT by construction),
+   writes the u32 through the RW fixmap alias, performs the architectural
+   caches_clean_inval_pou + broadcast IS TLBI, then tears the fixmap down.
+   Eliminates the contig-block BBM hazard that broke the bespoke PTE-flip
+   path on Android 15 / 6.6 GKI (kernel .text is mapped with PTE_CONT, so a
+   per-VA TLBI cannot evict the 64 KiB amalgamated TLB entry — see pstore
+   evidence: pte=0x00580000A90D0703 has bit 7=0 (writable per our flip), bit
+   51=1 (DBM set), and bit 52=1 (PTE_CONT) — the in-memory leaf was correct
+   but the TLB held a stale RO entry tagged with a sibling VA in the contig
+   group). The same primitive is used by ftrace, jump_label, static_call,
+   KernelPatch, and KernelSU. */
+typedef int (*drv_insn_patch_text_nosync_fn_t)(void *addr, u32 insn);
+static drv_insn_patch_text_nosync_fn_t drv_insn_patch_text_nosync;
+
+/* CFI-safe trampoline — mirrors kallsym_call_resolved in kallsym.c. The
+   kallsyms-resolved address was not built with caller-side CFI metadata
+   matching this typedef, so the indirect call must bypass kCFI. */
+static __nocfi int drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn_t fn, void *addr, u32 insn) {
+	return fn(addr, insn);
+}
+
+int memory_init(void) {
+	unsigned long addr = kallsym_lookup("aarch64_insn_patch_text_nosync");
+
+	if (!addr) {
+		pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
+		return 0; /* non-fatal: fallback path still works on non-CONT kernels */
+	}
+
+	drv_insn_patch_text_nosync = (drv_insn_patch_text_nosync_fn_t)addr;
+	return 0;
+}
 
 /* phys_to_virt() lives in <asm/memory.h>; honours vabits_actual so the linear-map VA is correct on every supported KMI without per-version PAGE_OFFSET constants. */
 
@@ -439,8 +482,14 @@ next:
 	return 1;
 }
 
-/* Walks mm->pgd via the canonical chain, flips PTE_RDONLY/PTE_DBM around a byte copy. drv.m_pgd_va is the kernel's swapper_pg_dir captured at init — we still walk it manually because we must operate on the leaf entry by pointer (to flip bits in place), and the chain helpers return pte_t* which is exactly what we need. */
-u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
+/* Legacy bespoke RO patcher: walks drv.m_pgd_va, flips PTE_RDONLY/PTE_DBM
+   around a byte copy, restores. Verbatim 1:1 with the original .ko. UNSAFE
+   on PTE_CONT-mapped text (Android 15 / 6.6 GKI maps kernel .text with the
+   contiguous hint — a per-VA TLBI cannot evict the amalgamated 64 KiB TLB
+   entry). Kept as the fallback path when aarch64_insn_patch_text_nosync is
+   not resolvable via kallsyms. Reachable today only on stripped kernels or
+   for byte-granular non-CONT writes on legacy KMIs. */
+static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	u64 result = dst_kva;
 	const u8 *end = (const u8 *)(uintptr_t)dst_kva + len;
 	long diff = (long)(uintptr_t)src - (long)result;
@@ -534,6 +583,42 @@ u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
 	}
 
 	return result;
+}
+
+/* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync (resolved
+   once at init via kallsym_lookup) — routes the write through FIX_TEXT_POKE0
+   (a non-CONT fixmap slot) + caches_clean_inval_pou + broadcast IS TLBI.
+   Architecturally safe on PTE_CONT-mapped kernel text.
+
+   Fallback: legacy bespoke PTE-flip when the kernel symbol is not in
+   kallsyms (downgraded KMI, stripped kernel) or when caller hands unaligned
+   data. In-tree callers (hook_install / hook_remove) always pass 4-byte
+   aligned dst (function entry), 4-byte aligned src (u32 tramp_insts[]), and
+   a 4-byte-multiple len, so the fast path is taken in production. */
+u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
+	drv_insn_patch_text_nosync_fn_t patch = READ_ONCE(drv_insn_patch_text_nosync);
+	const u32 *src_u32;
+	u64 i, words;
+
+	if (len == 0)
+		return dst_kva;
+
+	if (!patch || (dst_kva & 3u) || ((uintptr_t)src & 3u) || (len & 3u))
+		return write_ro_memory_pte_flip(dst_kva, src, len);
+
+	src_u32 = (const u32 *)src;
+	words = len >> 2;
+	for (i = 0; i < words; i++) {
+		u32 insn;
+
+		memcpy(&insn, &src_u32[i], sizeof(insn));
+		if (drv_call_insn_patch_text_nosync(patch, (void *)(uintptr_t)(dst_kva + (i << 2)), insn)) {
+			pr_drv_err("write_ro_memory: aarch64_insn_patch_text_nosync(%llx) failed\n",
+				   (unsigned long long)(dst_kva + (i << 2)));
+			break;
+		}
+	}
+	return dst_kva + (i << 2);
 }
 
 u64 process_get_module_base(struct task_struct *task, const char *module_name) {
