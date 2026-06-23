@@ -149,6 +149,14 @@ static int install_mem_abort_kprobe(void) {
 	if (do_mem_abort_kp_registered)
 		return 0;
 
+	/* do_mem_abort is annotated NOKPROBE_SYMBOL on every supported KMI
+	 * (its entry is added to kprobe_blacklist at boot).  Zero the list so
+	 * within_kprobe_blacklist() returns false and register_kprobe doesn't
+	 * silently bail with -EINVAL.  This is the same call the original .ko
+	 * makes; on a kernel where do_mem_abort is NOT blacklisted it's a
+	 * harmless no-op on the rest of the list. */
+	(void)kallsym_disable_kprobe_blacklist();
+
 	ret = register_kprobe(&do_mem_abort_kp);
 	if (ret) {
 		pr_drv_err("register_kprobe(do_mem_abort) failed: %d\n", ret);

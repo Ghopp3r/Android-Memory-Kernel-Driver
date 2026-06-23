@@ -238,11 +238,17 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	return 0;
 }
 
+/* Reject obviously-bogus user pointers via the kernel's per-task access_ok().
+ *
+ * Replaces the hand-rolled `(DRV_TASK_SIZE_64 - size) >= ptr` guard that used a
+ * baked-in 0x8000000000 (39-bit VA) constant.  When the caller's buffer sat in
+ * the top of the 39-bit user VA — exactly where arm64 main-thread stacks live —
+ * adding a multi-MiB length crossed the constant and the guard silently rejected
+ * valid buffers, leaving DRV_CMD_READ_MEM_* returning size_back=0 with no error
+ * propagated past comm.c.  access_ok() consults TASK_SIZE_MAX (vabits_actual)
+ * and matches whatever VA layout the running kernel actually uses. */
 static inline bool drv_user_ptr_in_range(u64 ptr, u64 size) {
-	/* (TASK_SIZE_64 - n) >= ptr, equivalent to ptr + n <= TASK_SIZE_64 without overflow. */
-	if (size > DRV_TASK_SIZE_64)
-		return false;
-	return (DRV_TASK_SIZE_64 - size) >= ptr;
+	return access_ok((const void __user *)(uintptr_t)ptr, (size_t)size);
 }
 
 int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void *local_kbuf, size_t len) {
@@ -420,15 +426,20 @@ int kernel_rw(u64 kva, void *buf, size_t len, int do_write) {
 	return 0;
 }
 
+#define DRV_MULTI_READ_MAX_COUNT 4096u   /* hard ceiling so attacker-controlled
+                                           count cannot DoS the system via a
+                                           ~96 KiB+ kvmalloc staging spike. */
+
 int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, unsigned int count) {
 	struct drv_multi_read_req *staging;
-	size_t bytes = (size_t)count * sizeof(*staging);
+	size_t bytes;
 	unsigned int i;
 
-	if (!target_mm || !descs || !count)
+	if (!target_mm || !descs || !count || count > DRV_MULTI_READ_MAX_COUNT)
 		return -EINVAL;
 
-	staging = kvmalloc_node(bytes, GFP_KERNEL_ACCOUNT | __GFP_HIGH, NUMA_NO_NODE);
+	bytes = (size_t)count * sizeof(*staging);
+	staging = kvmalloc_node(bytes, GFP_KERNEL_ACCOUNT, NUMA_NO_NODE);
 	if (!staging)
 		return -ENOMEM;
 
