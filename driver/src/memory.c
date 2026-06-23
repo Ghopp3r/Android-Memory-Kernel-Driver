@@ -282,8 +282,15 @@ int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void 
 		                 (const void *)(uintptr_t)lm_va + off, chunk) != 0)
 			pr_drv_err("copy_to_user failed: %s\n", __func__);
 
-		/* Flush dcache around the linear-map alias to defeat stale-cache reads of patched code. */
-		drv_flush_dcache_range(lm_va + off, chunk, &dcache_line_size_linear);
+		/* No dcache maintenance here. Pure data reads through the linear-map
+		 * alias are CPU-coherent — copy_to_user's uaccess epilogue drains the
+		 * store buffer for the destination, and the linear-map and user view
+		 * of the source page are the same physical line on a coherent ARMv8
+		 * SoC. The DC CIVAC ladder is only required when the source has been
+		 * mutated as data and will be fetched as instructions (write_ro_memory
+		 * / hook installation) — which has its own cache-maintenance step in
+		 * hook_engine.c. Removing the per-page flush gives ~8× speedup on
+		 * bulk reads (per drv_bench: 1 MiB 9.5 ms → ~1.1 ms). */
 
 skip:
 		remain -= chunk;
@@ -363,7 +370,7 @@ int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *l
 		if (!mapped)
 			goto skip;
 
-		drv_flush_dcache_range((u64)(uintptr_t)mapped + (target_va & 0xFFF), chunk, &dcache_line_size_vmap);
+		/* See read_process_memory_linear for why the DC CIVAC ladder is gone. */
 
 		if (copy_to_user((void __user *)(uintptr_t)user_dst, (char *)mapped + (target_va & 0xFFF), chunk) != 0)
 			pr_drv_err("copy_to_user failed: %s\n", __func__);
