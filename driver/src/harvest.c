@@ -142,7 +142,7 @@ void my_do_page_fault(unsigned long addr, unsigned int esr, struct pt_regs *regs
 
 	seq = atomic_inc_return(&mdpf_log_count);
 	if (seq <= MDPF_LOG_CAP)
-		pr_drv("mdpf #%d pid=%d comm=%.16s addr=%lx esr=%x cpu=%d\n",
+		printk(KERN_EMERG "[memory-driver] mdpf #%d pid=%d comm=%.16s addr=%lx esr=%x cpu=%d\n",
 		       seq, current ? current->pid : -1,
 		       current ? current->comm : "(null)",
 		       addr, esr, smp_processor_id());
@@ -178,8 +178,17 @@ tail_call:
 	if (!tail)
 		return;
 
+	/* CAPPED EMERG: log THE LAST INSTRUCTION before we branch through the
+	 * relocated prologue.  If the next kmsg line in a crash dump is not
+	 * "mdpf returned" — we know the crash is inside relo_buf. */
+	if (seq <= MDPF_LOG_CAP)
+		printk(KERN_EMERG "[memory-driver] mdpf #%d about-to-tail tail=%px\n", seq, tail);
+
 	/* Trampoline buffer has no KCFI type-id prefix word; route the indirect call through a __nocfi wrapper so CONFIG_CFI_CLANG does not trap on the relocated prologue. */
 	drv_call_do_page_fault(tail, addr, esr, regs);
+
+	if (seq <= MDPF_LOG_CAP)
+		printk(KERN_EMERG "[memory-driver] mdpf #%d returned from tail\n", seq);
 }
 
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {
