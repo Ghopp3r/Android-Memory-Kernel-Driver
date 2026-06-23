@@ -424,7 +424,10 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (mm) {
 			rc = multi_read_process_memory(mm, (void __user *)(uintptr_t)req.buf, (unsigned int)req.extra);
-			result = (rc == 0) ? 1 : 0;
+			/* multi_read_process_memory returns 1 on success and a
+			 * negative errno on failure; map both to the writeback
+			 * convention (req.size = 1 on success, 0 on failure). */
+			result = (rc > 0) ? 1 : 0;
 		}
 		break;
 	case DRV_CMD_DUMP_VMAS:

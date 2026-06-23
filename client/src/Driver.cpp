@@ -179,11 +179,23 @@ std::vector<uint64_t> CDriver::multiRead(const std::vector<uint64_t>& addrs) {
     if (addrs.empty())
         return out;
 
+    // Driver ABI (do_memory_cmd case DRV_CMD_MULTI_READ):
+    //   req.buf   = userspace pointer to drv_multi_read_req[] array
+    //   req.extra = element count
+    //   req.size writeback = 1 on success, 0 on failure
+    // The parallel-u64[] shape we used previously sent the array via req.addr
+    // and the count via req.size, both of which the driver ignores for this cmd.
+    std::vector<drv_multi_read_req> descs(addrs.size());
+    for (size_t i = 0; i < addrs.size(); ++i) {
+        descs[i].user_dst = reinterpret_cast<uint64_t>(&out[i]);
+        descs[i].src_va   = addrs[i];
+        descs[i].len      = sizeof(uint64_t);
+    }
+
     drv_ioctl_req req = makeReq(m_targetPid);
-    req.addr = reinterpret_cast<uint64_t>(addrs.data());
-    req.buf = reinterpret_cast<uint64_t>(out.data());
-    req.size = addrs.size();
-    if (doIoctl(DRV_CMD_MULTI_READ, &req) < 0)
+    req.buf   = reinterpret_cast<uint64_t>(descs.data());
+    req.extra = descs.size();
+    if (doIoctl(DRV_CMD_MULTI_READ, &req) < 0 || req.size != 1)
         out.clear();
     return out;
 }

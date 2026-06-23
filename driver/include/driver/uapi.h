@@ -79,7 +79,16 @@ struct drv_ioctl_req {
 	__u64 extra;    /* +0x20 */
 };
 
-/* Single element of the vectored DRV_CMD_MULTI_READ array (24 bytes each). */
+/* Single element of the vectored DRV_CMD_MULTI_READ array (24 bytes each).
+ *
+ * DRV_CMD_MULTI_READ ABI inside drv_ioctl_req:
+ *   req.pid   = target task pid (as for every read-mem family cmd)
+ *   req.buf   = userspace pointer to the drv_multi_read_req[] descriptor array
+ *   req.extra = element count
+ *   req.size  = writeback slot — driver writes 1 on success, 0 on failure
+ *
+ * req.addr is unused for this cmd; do NOT put the array pointer there (the
+ * driver only reads req.buf).  See comm.c case DRV_CMD_MULTI_READ. */
 struct drv_multi_read_req {
 	__u64 user_dst;
 	__u64 src_va;

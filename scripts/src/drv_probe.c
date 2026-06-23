@@ -345,7 +345,9 @@ static void test_write_mem(struct helper_state *h, unsigned int cmd, const char 
 }
 
 static void test_multi_read(struct helper_state *h) {
-	/* 4 disjoint 64-byte regions inside the helper's known page. */
+	/* 4 disjoint 64-byte regions inside the helper's known page.
+	 * ABI: array pointer goes in req.buf, count in req.extra; req.size is
+	 * writeback (1 on success, 0 on failure). */
 	struct drv_multi_read_req descs[4];
 	uint8_t  dst[4][64] = {{0}};
 	for (int i = 0; i < 4; ++i) {
@@ -353,11 +355,11 @@ static void test_multi_read(struct helper_state *h) {
 		descs[i].src_va   = h->known_addr + (uint64_t)i * 128;
 		descs[i].len      = 64;
 	}
-	struct drv_ioctl_req r = mkreq(h->pid, (uintptr_t)descs,
-	                               (uintptr_t)dst, 4, 0);
+	struct drv_ioctl_req r = mkreq(h->pid, /*addr*/0,
+	                               (uintptr_t)descs, /*size*/0, /*extra*/4);
 	double ms;
 	int rc = doctl(DRV_CMD_MULTI_READ, &r, &ms);
-	bool pass = (rc == 0);
+	bool pass = (rc == 0 && r.size == 1);
 	if (pass) {
 		for (int i = 0; i < 4 && pass; ++i) {
 			for (size_t j = 0; j < 64 / 4; ++j) {
@@ -367,7 +369,8 @@ static void test_multi_read(struct helper_state *h) {
 			}
 		}
 	}
-	log_result("MULTI_READ", pass, ms, "rc=%d", rc);
+	log_result("MULTI_READ", pass, ms, "rc=%d size_back=%lu",
+	           rc, (unsigned long)r.size);
 }
 
 static void test_dump_vmas(struct helper_state *h) {
