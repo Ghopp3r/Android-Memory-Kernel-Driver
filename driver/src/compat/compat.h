@@ -50,6 +50,13 @@
 #  define DRV_KALLSYMS_VIA_KPROBE 1
 #endif
 
+/* do_page_fault's esr argument width changed at v5.15 (commit a13261a3d2e9 widened it from unsigned int to unsigned long). The kprobe pre_handler reads esr from regs->regs[1] as u64 regardless, so the macro is only needed by any future code that declares a do_page_fault-shaped function pointer. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
+#  define DRV_ESR_T unsigned int
+#else
+#  define DRV_ESR_T unsigned long
+#endif
+
 /* KGSL_DRIVER_RBTREE_OFFSET — offset of the rb_root inside the global kgsl_driver pagetable cache reached via kallsyms_lookup_name("kgsl_driver"). Vendor (Qualcomm) struct kept private; no public header carries the layout. Derived from the page_fault_harvest / gpu_stealth dossiers. */
 #define KGSL_DRIVER_RBTREE_OFFSET 72 /* 0x48 */
 

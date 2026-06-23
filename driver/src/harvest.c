@@ -73,17 +73,23 @@ static bool harvest_match_current_pkg(void) {
 	return strncmp(task->comm, KCFG_TARGET_PACKAGE, TASK_COMM_LEN) == 0;
 }
 
-/* do_page_fault pre_handler.
+/* do_mem_abort pre_handler.
  *
- * `regs` is the kprobe trap frame captured at the BRK in do_page_fault's
+ * do_page_fault itself is annotated `static __kprobes` and therefore lies in
+ * the .kprobes.text section that arch_within_kprobe_blacklist() rejects via
+ * linker-baked bounds (kallsym_disable_kprobe_blacklist cannot reach that
+ * check).  do_mem_abort is the only caller of do_page_fault on arm64 and
+ * shares the exact same signature — kprobing it is equivalent for our
+ * purposes and is allowed by the kprobes core.
+ *
+ * `regs` is the kprobe trap frame captured at the BRK in do_mem_abort's
  * prologue; X0..X2 still hold the probed function's three incoming args:
  *   regs->regs[0] = far  (unsigned long)
  *   regs->regs[1] = esr  (unsigned long)
  *   regs->regs[2] = inner pt_regs *  — the FAULTING TASK's user-space reg
- *                                       file (what the original do_page_fault
- *                                       was called with). Harvest's X2/X8/X9
- *                                       come from inner->regs[*]. */
-int do_page_fault_pre(struct kprobe *p, struct pt_regs *regs) {
+ *                                       file. Harvest's X2/X8/X9 come from
+ *                                       inner->regs[*]. */
+int do_mem_abort_pre(struct kprobe *p, struct pt_regs *regs) {
 	struct pt_regs *inner;
 	unsigned long esr;
 	u64 x2, x8, x9;
@@ -111,7 +117,7 @@ int do_page_fault_pre(struct kprobe *p, struct pt_regs *regs) {
 	wz_record(x9, x8, x2);
 	return 0;
 }
-NOKPROBE_SYMBOL(do_page_fault_pre);
+NOKPROBE_SYMBOL(do_mem_abort_pre);
 
 /* Backup harvest entry: arm64_force_sig_fault fires on the SIGSEGV escalation
  * path. The user reg-file is not available from this kprobe's arg list, so we
@@ -125,11 +131,11 @@ int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {
 }
 NOKPROBE_SYMBOL(arm64_force_sig_fault_pre);
 
-static struct kprobe do_page_fault_kp = {
-	.symbol_name = "do_page_fault",
-	.pre_handler = do_page_fault_pre,
+static struct kprobe do_mem_abort_kp = {
+	.symbol_name = "do_mem_abort",
+	.pre_handler = do_mem_abort_pre,
 };
-static bool do_page_fault_kp_registered;
+static bool do_mem_abort_kp_registered;
 
 static struct kprobe arm64_force_sig_fault_kp = {
 	.symbol_name = "arm64_force_sig_fault",
@@ -137,24 +143,18 @@ static struct kprobe arm64_force_sig_fault_kp = {
 };
 static bool arm64_force_sig_fault_kp_registered;
 
-static int install_page_fault_kprobe(void) {
+static int install_mem_abort_kprobe(void) {
 	int ret;
 
-	if (do_page_fault_kp_registered)
+	if (do_mem_abort_kp_registered)
 		return 0;
 
-	/* do_page_fault is `static __kprobes` in arch/arm64/mm/fault.c — its
-	 * address falls inside the .kprobes.text range that the kprobes core
-	 * blacklists at boot. Zero the blacklist so within_kprobe_blacklist()
-	 * returns false and check_kprobe_address_safe() succeeds. */
-	(void)kallsym_disable_kprobe_blacklist();
-
-	ret = register_kprobe(&do_page_fault_kp);
+	ret = register_kprobe(&do_mem_abort_kp);
 	if (ret) {
-		pr_drv_err("register_kprobe(do_page_fault) failed: %d\n", ret);
+		pr_drv_err("register_kprobe(do_mem_abort) failed: %d\n", ret);
 		return ret;
 	}
-	do_page_fault_kp_registered = true;
+	do_mem_abort_kp_registered = true;
 	return 0;
 }
 
@@ -176,7 +176,7 @@ static int install_force_sig_fault_kprobe(void) {
 int install_harvest_hooks(void) {
 	int rc;
 
-	rc = install_page_fault_kprobe();
+	rc = install_mem_abort_kprobe();
 	if (rc)
 		return rc;
 	return install_force_sig_fault_kprobe();
@@ -187,9 +187,9 @@ void uninstall_harvest_hooks(void) {
 		unregister_kprobe(&arm64_force_sig_fault_kp);
 		arm64_force_sig_fault_kp_registered = false;
 	}
-	if (do_page_fault_kp_registered) {
-		unregister_kprobe(&do_page_fault_kp);
-		do_page_fault_kp_registered = false;
+	if (do_mem_abort_kp_registered) {
+		unregister_kprobe(&do_mem_abort_kp);
+		do_mem_abort_kp_registered = false;
 	}
 }
 

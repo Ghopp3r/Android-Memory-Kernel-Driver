@@ -35,6 +35,10 @@ static void mm_globals_init(void) {
 
 	drv.m_page_level = (60u - t0sz) / 9u;
 	drv.m_pgd_va = (u64)(uintptr_t)phys_to_virt(pgd_pa);
+
+	/* Catches LPA2 / 52-bit-VA vendor builds where the walker would need a
+	 * 5th level. GKI 5.10..6.12 default VA_BITS ∈ {39,48} → level ∈ {3,4}. */
+	WARN_ON_ONCE(drv.m_page_level < 3 || drv.m_page_level > 4);
 }
 
 /* WARNING: touches the global modules list (mod->list) and modules_kset list (mod->mkobj.kobj.entry) without holding module_mutex / modules_kset->list_lock. The original .ko performs the same unlocked mutation; we preserve that 1:1. In practice do_init_module() runs under module_mutex on most 6.x kernels so the race is narrow, but that is not a published contract -- treat as a known on-spec hazard against concurrent insmod/rmmod. */
