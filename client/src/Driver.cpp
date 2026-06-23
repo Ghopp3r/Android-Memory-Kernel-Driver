@@ -10,13 +10,9 @@
 #include <unistd.h>
 #include <utility>
 
-static constexpr unsigned long RebootMagic = DRIVER_REBOOT_MAGIC1;
-static constexpr unsigned long PrctlMagic = DRIVER_PRCTL_MAGIC;
+static constexpr unsigned long RebootMagic1 = DRIVER_REBOOT_MAGIC1;
+static constexpr unsigned long RebootMagic2 = DRIVER_REBOOT_MAGIC2;
 static constexpr size_t VmaDumpEntries = 1024;
-
-#ifndef DRIVER_ENABLE_REBOOT_HANDSHAKE
-#define DRIVER_ENABLE_REBOOT_HANDSHAKE 0
-#endif
 
 static drv_ioctl_req makeReq(pid_t pid) {
     drv_ioctl_req r{};
@@ -49,31 +45,25 @@ bool CDriver::open() {
     if (m_fd >= 0)
         return true;
 
+    // Magic-handshake bootstrap: the kernel's __arm64_sys_reboot kprobe
+    // pre-handler matches inner_regs[0]==MAGIC1 && inner_regs[1]==MAGIC2 and
+    // writes the freshly-installed anon-inode fd into the userspace pointer
+    // passed via inner_regs[3] (= the 4th reboot() arg). Both magics are the
+    // same value per IDA dossier; regs[2] (the reboot `cmd` arg) is ignored.
+    //
+    // Reachability: works from adb shell uid. Bionic seccomp blocks
+    // __NR_reboot for Zygote-forked app uids; if the client needs to run
+    // inside an app, spawn it from adb shell or via a privileged helper.
     int newFd = -1;
-    long rc = ::syscall(SYS_prctl, PrctlMagic, PrctlMagic, &newFd, 0, 0);
-    int prctlErrno = errno;
+    long rc = ::syscall(SYS_reboot, RebootMagic1, RebootMagic2, 0L, &newFd);
+    int savedErrno = errno;
     if (newFd >= 0) {
         m_fd = newFd;
         return true;
     }
-
-#if DRIVER_ENABLE_REBOOT_HANDSHAKE
-    newFd = -1;
-    rc = ::syscall(SYS_reboot, RebootMagic, RebootMagic, RebootMagic, &newFd);
-    int rebootErrno = errno;
-    if (newFd < 0) {
-        errno = (rc < 0) ? rebootErrno : prctlErrno;
-        return false;
-    }
-
-    m_fd = newFd;
-    return true;
-#else
     (void)rc;
-    (void)RebootMagic;
-    errno = prctlErrno;
+    errno = savedErrno;
     return false;
-#endif
 }
 
 void CDriver::close() {

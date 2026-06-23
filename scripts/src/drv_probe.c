@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Autonomous on-device verification harness for my-driver.ko.
 //
-// Speaks the same UAPI as client/Driver.cpp (prctl-magic handshake → anon
+// Speaks the same UAPI as client/Driver.cpp (reboot-magic handshake → anon
 // inode fd → naked-integer ioctl) but runs every DRV_CMD against a
 // ground-truth comparison and records latency.  Single-file C, no external
 // dependencies beyond bionic.
@@ -91,11 +91,11 @@ static double ts_diff_ms(struct timespec a, struct timespec b) {
 
 static bool driver_open(void) {
 	int fd = -1;
-	long rc = syscall(SYS_prctl, (long)DRIVER_PRCTL_MAGIC, (long)DRIVER_PRCTL_MAGIC,
-	                  (long)&fd, 0L, 0L);
+	long rc = syscall(SYS_reboot, (long)DRIVER_REBOOT_MAGIC1,
+	                  (long)DRIVER_REBOOT_MAGIC2, 0L, (long)&fd);
 	(void)rc;
 	if (fd < 0) {
-		fprintf(stderr, "driver_open: prctl handshake failed, errno=%d (%s)\n",
+		fprintf(stderr, "driver_open: reboot handshake failed, errno=%d (%s)\n",
 		        errno, strerror(errno));
 		return false;
 	}

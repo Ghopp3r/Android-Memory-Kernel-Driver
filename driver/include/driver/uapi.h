@@ -17,16 +17,14 @@
 #  define KCFG_REBOOT_MAGIC 0x123456u
 #endif
 
-#ifndef KCFG_PRCTL_MAGIC
-#  define KCFG_PRCTL_MAGIC 0x12345678u
-#endif
-
-/* reboot () handshake: regs[0] == MAGIC1 && regs[1] == MAGIC2; regs[3] is the userspace pointer where the installed fd is written back. The binary uses the same magic on both slots. */
+/* reboot () handshake — the sole bootstrap path. The kprobe on
+ * __arm64_sys_reboot matches (regs[0],regs[1]) == (MAGIC1,MAGIC2) on the
+ * inner wrapped pt_regs; regs[3] is the userspace pointer where the
+ * freshly-installed anon-inode fd is written back; regs[2] is ignored.
+ * The IDA original binary uses the same magic on both slots. Reachable
+ * from adb shell uid; bionic seccomp blocks __NR_reboot for app uids. */
 #define DRIVER_REBOOT_MAGIC1 KCFG_REBOOT_MAGIC
 #define DRIVER_REBOOT_MAGIC2 KCFG_REBOOT_MAGIC
-
-/* prctl () fallback handshake — for environments where reboot () is filtered by seccomp. */
-#define DRIVER_PRCTL_MAGIC KCFG_PRCTL_MAGIC
 
 /* Two reserved cmd codes handled OUTSIDE the main switch. PING: returns success unconditionally (userspace verifies the fd is ours). HELLO: echo-back probe used for protocol version negotiation. */
 #define DRIVER_IOCTL_PING 0x9FBF1u

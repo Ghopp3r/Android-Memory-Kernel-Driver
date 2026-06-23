@@ -96,13 +96,6 @@ struct kprobe reboot_kp = {
 	.pre_handler = reboot_handler_pre,
 };
 
-struct kprobe prctl_kp = {
-	.symbol_name = "__arm64_sys_prctl",
-	.pre_handler = prctl_handler_pre,
-};
-
-bool prctl_kp_registered;
-
 static int drv_copy_kernel_nofault_compat(void *dst, const void *src, size_t size) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 	return copy_from_kernel_nofault(dst, src, size);
@@ -172,33 +165,6 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	}
 
 	drv_queue_fd_install((void __user *)args[3], "reboot");
-
-	return 0;
-}
-
-int prctl_handler_pre(struct kprobe *p, struct pt_regs *regs) {
-	unsigned long args[4];
-
-	(void)p;
-
-	if (!regs)
-		return 0;
-
-	args[0] = regs->regs[0];
-	args[1] = regs->regs[1];
-	args[2] = regs->regs[2];
-	args[3] = regs->regs[3];
-
-	if ((u32)args[0] != COMM_PRCTL_MAGIC || (u32)args[1] != COMM_PRCTL_MAGIC) {
-		if (!drv_read_wrapped_syscall_args(regs, args))
-			return 0;
-		if ((u32)args[0] != COMM_PRCTL_MAGIC || (u32)args[1] != COMM_PRCTL_MAGIC)
-			return 0;
-		drv_queue_fd_install((void __user *)args[2], "prctl/ptregs");
-		return 0;
-	}
-
-	drv_queue_fd_install((void __user *)args[2], "prctl");
 
 	return 0;
 }

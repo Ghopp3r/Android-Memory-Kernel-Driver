@@ -66,22 +66,19 @@ ccflags-y += -Wno-unused-variable
 #   KCFG_DRIVER_NAME    - module name as a C string (matches DRIVER_NAME).
 #   KCFG_ANON_INODE_NAME- name passed to anon_inode_getfile (the
 #                         /proc/<pid>/fdinfo "anon_inode:<name>" label).
-#   KCFG_REBOOT_MAGIC   - sentinel magic the reboot()/prctl() handshakes
-#                         look for in regs[0]/regs[1]. uapi.h exposes the
-#                         same value as DRIVER_REBOOT_MAGIC1/2 for the
-#                         userspace client.
-#   KCFG_PRCTL_MAGIC    - same idea for the prctl() fallback handshake.
+#   KCFG_REBOOT_MAGIC   - sentinel magic the reboot() handshake looks for
+#                         in regs[0]/regs[1] (inner wrapped pt_regs).
+#                         uapi.h exposes the same value as
+#                         DRIVER_REBOOT_MAGIC1/2 for the userspace client.
 # -----------------------------------------------------------------------------
 TARGET_PKG ?= "cent.tmgp.sgame"
 ANON_INODE_NAME ?= "[driver]"
 REBOOT_MAGIC ?= 0x123456u
-PRCTL_MAGIC ?= 0x12345678u
 
 ccflags-y += -DKCFG_TARGET_PACKAGE='$(TARGET_PKG)'
 ccflags-y += -DKCFG_DRIVER_NAME='"$(DRIVER_NAME)"'
 ccflags-y += -DKCFG_ANON_INODE_NAME='$(ANON_INODE_NAME)'
 ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
-ccflags-y += -DKCFG_PRCTL_MAGIC='$(PRCTL_MAGIC)'
 
 # -----------------------------------------------------------------------------
 # Optional feature gates (off by default — uncomment in your local Kbuild or
