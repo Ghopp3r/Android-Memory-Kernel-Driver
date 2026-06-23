@@ -126,78 +126,18 @@ static bool harvest_match_current_pkg(void) {
 	return strncmp(task->comm, KCFG_TARGET_PACKAGE, TASK_COMM_LEN) == 0;
 }
 
+/* MINIMAL pass-through for isolation: NO harvest body, NO printk, NO
+ * atomic / this_cpu / preempt operations.  Just forward to the relocated
+ * original prologue and return what it returns.  If the device survives
+ * this configuration, the previous body was the panic source (printk in
+ * fault context, DEBUG_PREEMPT splat, or per-cpu state without
+ * preempt_disable).  If it still panics, the bug is in the trampoline /
+ * relo-buffer execution path itself. */
 int my_do_page_fault(unsigned long far, unsigned long esr, struct pt_regs *regs) {
-	int (*tail)(unsigned long, unsigned long, struct pt_regs *);
-	u8 *guard;
-	int seq = 0;
-	int rc;
-
-	/* preempt_disable bracket so this_cpu_ptr / raw_smp_processor_id stay
-	 * sensible under DEBUG_PREEMPT-enabled userdebug GKI builds. The whole
-	 * body is tiny and non-sleeping, so preempt-off cost is negligible. */
-	preempt_disable();
-
-	guard = this_cpu_ptr(&harvest_in_progress);
-
-	/* Re-entered on the same CPU (e.g. a deref inside the harvest body
-	 * crashed and the kernel re-entered do_page_fault) → skip the body
-	 * entirely and chain to the original. */
-	if (*guard)
-		goto tail_call;
-	*guard = 1;
-
-	seq = atomic_inc_return(&mdpf_log_count);
-	if (seq <= MDPF_LOG_CAP)
-		printk(KERN_EMERG "[memory-driver] mdpf #%d pid=%d comm=%.16s far=%lx esr=%lx cpu=%d\n",
-		       seq, current ? current->pid : -1,
-		       current ? current->comm : "(null)",
-		       far, esr, raw_smp_processor_id());
-
-	if (!regs)
-		goto tail_call_clear;
-
-	if (!harvest_match_current_pkg())
-		goto tail_call_clear;
-
-	/* Use the real ESR parameter — the previous read of `((u64 *)regs)[30]`
-	 * was a misnamed pt_regs->pc slot, not the ESR. */
-	if ((esr & ESR_DFSC_MASK) != ESR_DFSC_HARVEST_VAL)
-		goto tail_call_clear;
-
-	{
-		u64 x2 = ((u64 *)regs)[2];
-		u64 x8 = ((u64 *)regs)[8];
-		u64 x9 = ((u64 *)regs)[9];
-
-		if (x8 == 0 || x2 == 0)
-			goto tail_call_clear;
-		/* Upper 32 bits of X9 encode the hero-id in a tagged pointer. */
-		if ((u32)(x9 >> 32) == 0)
-			goto tail_call_clear;
-
-		wz_record(x9, x8, x2);
-	}
-
-tail_call_clear:
-	*guard = 0;
-tail_call:
-	tail = orig_do_page_fault;
-	if (!tail) {
-		preempt_enable();
-		return 0;  /* claim handled — original is unavailable */
-	}
-
-	if (seq && seq <= MDPF_LOG_CAP)
-		printk(KERN_EMERG "[memory-driver] mdpf #%d about-to-tail tail=%px\n", seq, tail);
-
-	/* Trampoline buffer has no KCFI type-id prefix word; route the indirect call through a __nocfi wrapper so CONFIG_CFI_CLANG does not trap on the relocated prologue. */
-	rc = drv_call_do_page_fault(tail, far, esr, regs);
-
-	if (seq && seq <= MDPF_LOG_CAP)
-		printk(KERN_EMERG "[memory-driver] mdpf #%d returned from tail rc=%d\n", seq, rc);
-
-	preempt_enable();
-	return rc;
+	int (*tail)(unsigned long, unsigned long, struct pt_regs *) = orig_do_page_fault;
+	if (!tail)
+		return 0;
+	return drv_call_do_page_fault(tail, far, esr, regs);
 }
 
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {
@@ -297,11 +237,24 @@ static int install_page_fault_hook(void) {
 	       (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num);
 	trace_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d",
 	          (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num);
+
+	/* PAC fix: hook_prepare relo_ignore-emits the original PACIASP into
+	 * relo_insts[0].  Executing PACIASP there re-signs X30 with the deeper
+	 * call-chain SP (drv_call_do_page_fault's local SP), so the real
+	 * do_page_fault epilogue's AUTIASP authenticates against the wrong
+	 * modifier and faults.  Patch the first relo word to NOP so the chain
+	 * stays PAC-balanced: my_do_page_fault has its own PACIASP/AUTIASP,
+	 * drv_call_do_page_fault has its own, and the inner relo_buf simply
+	 * skips the redundant sign. */
+	if (do_page_fault_hook.origin_insts[0] == 0xd503233fu /* PACIASP */ &&
+	    do_page_fault_hook.relo_insts_num >= 1 &&
+	    do_page_fault_hook.relo_insts[0] == 0xd503233fu) {
+		do_page_fault_hook.relo_insts[0] = 0xd503201fu; /* NOP */
+		trace_drv("install_page_fault_hook: PAC FIX — relo[0] PACIASP -> NOP");
+	}
+
 	{
-		/* Full dump of every word the engine generated, so the next reboot
-		 * trace alone is enough to disassemble what actually executes at
-		 * relo_buf. The relo cursor (relo_insts_num) is the live word count;
-		 * the buffer itself is RELOCATE_INST_NUM (41) words wide. */
+		/* Full dump AFTER the PAC patch so the trace shows what will actually run. */
 		int i;
 		for (i = 0; i < TRAMPOLINE_MAX_NUM; i++)
 			trace_drv("  origin[%d] = 0x%08x", i, do_page_fault_hook.origin_insts[i]);
