@@ -34,7 +34,8 @@ $(DRIVER_NAME)-objs := \
 	src/stealth.o         \
 	src/hook_engine.o     \
 	src/uaccess_target.o  \
-	src/kallsym.o
+	src/kallsym.o         \
+	src/kdebug.o
 
 # -----------------------------------------------------------------------------
 # Compiler flags.

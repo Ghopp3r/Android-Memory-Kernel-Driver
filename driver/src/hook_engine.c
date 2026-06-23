@@ -11,6 +11,7 @@
 
 #include "hook_engine.h"
 #include "kallsym.h"
+#include "kdebug.h"
 #include "log.h"
 #include "memory.h"
 
@@ -73,9 +74,14 @@ static int hook_engine_resolve_symbols(void) {
 	       drv_module_alloc_ptr, drv_vfree_ptr,
 	       drv_set_memory_x_ptr, drv_set_memory_ro_ptr, drv_set_memory_nx_ptr,
 	       drv_aarch64_insn_patch_text_ptr, drv_caches_clean_inval_pou_ptr);
+	trace_drv("hook_engine resolve: module_alloc=%p vfree=%p set_x=%p set_ro=%p set_nx=%p insn_patch=%p caches=%p",
+	          drv_module_alloc_ptr, drv_vfree_ptr,
+	          drv_set_memory_x_ptr, drv_set_memory_ro_ptr, drv_set_memory_nx_ptr,
+	          drv_aarch64_insn_patch_text_ptr, drv_caches_clean_inval_pou_ptr);
 
 	if (!drv_module_alloc_ptr || !drv_vfree_ptr || !drv_set_memory_x_ptr) {
 		pr_drv_err("hook_engine: cannot resolve required symbols\n");
+		trace_drv("hook_engine: cannot resolve required symbols");
 		return -ENOENT;
 	}
 	return 0;
@@ -101,29 +107,37 @@ int hook_engine_exec_publish(void *buf, size_t bytes) {
 	if (hook_engine_resolve_symbols())
 		return -ENOSYS;
 
+	trace_drv("exec_publish: buf=%px bytes=%zu addr=%lx npages=%d", buf, bytes, addr, npages);
+
 	/* Push every store to PoU and broadcast-invalidate the I-cache over the
 	 * range so any remote CPU re-fetches the freshly-written instructions. */
 	if (drv_caches_clean_inval_pou_ptr) {
+		trace_drv("exec_publish: calling caches_clean_inval_pou");
 		drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_ptr, addr, addr + bytes);
 	} else {
+		trace_drv("exec_publish: caches_clean_inval_pou not resolved, fallback asm fence");
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("ic ialluis" ::: "memory");
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("isb" ::: "memory");
 	}
+	trace_drv("exec_publish: cache maintenance done, calling set_memory_x");
 
 	/* module_alloc returns RW+NX on arm64 GKI — flip to executable. */
 	ret = drv_call_set_memory(drv_set_memory_x_ptr, addr, npages);
 	if (ret) {
 		pr_drv_err("hook_engine_exec_publish: set_memory_x(%lx,%d) failed: %d\n", addr, npages, ret);
+		trace_drv("exec_publish: set_memory_x FAILED rc=%d", ret);
 		return ret;
 	}
+	trace_drv("exec_publish: set_memory_x ok, calling set_memory_ro");
 	if (drv_set_memory_ro_ptr) {
 		ret = drv_call_set_memory(drv_set_memory_ro_ptr, addr, npages);
 		if (ret)
 			pr_drv_warn("hook_engine_exec_publish: set_memory_ro(%lx,%d) failed: %d (continuing)\n",
 			            addr, npages, ret);
 	}
+	trace_drv("exec_publish: DONE");
 	return 0;
 }
 
@@ -589,9 +603,12 @@ static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt, const char *l
 
 	pr_drv("hook_engine_patch_window[%s]: dst=%llx cnt=%d insn_patch=%p\n",
 	       label, (unsigned long long)dst, cnt, drv_aarch64_insn_patch_text_ptr);
+	trace_drv("patch_window[%s]: dst=%llx cnt=%d insn_patch=%p",
+	          label, (unsigned long long)dst, cnt, drv_aarch64_insn_patch_text_ptr);
 
 	if (cnt <= 0 || cnt > TRAMPOLINE_MAX_NUM) {
 		pr_drv_err("hook_engine_patch_window[%s]: bad cnt=%d\n", label, cnt);
+		trace_drv("patch_window[%s]: BAD cnt=%d", label, cnt);
 		return;
 	}
 
@@ -599,15 +616,23 @@ static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt, const char *l
 		addrs[i] = (void *)(uintptr_t)(dst + (u64)i * 4u);
 
 	if (drv_aarch64_insn_patch_text_ptr) {
+		trace_drv("patch_window[%s]: calling aarch64_insn_patch_text", label);
 		rc = drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_ptr, addrs, insns, cnt);
-		if (rc)
+		if (rc) {
 			pr_drv_err("hook_engine_patch_window[%s]: aarch64_insn_patch_text rc=%d\n", label, rc);
+			trace_drv("patch_window[%s]: aarch64_insn_patch_text FAILED rc=%d", label, rc);
+		} else {
+			trace_drv("patch_window[%s]: aarch64_insn_patch_text OK", label);
+		}
 	} else {
+		trace_drv("patch_window[%s]: aarch64_insn_patch_text NOT resolved, falling back to write_ro_memory", label);
 		(void)write_ro_memory(dst, insns, (u64)cnt * 4u);
+		trace_drv("patch_window[%s]: write_ro_memory returned, issuing fence/IC IALLUIS", label);
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("ic ialluis" ::: "memory");
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("isb" ::: "memory");
+		trace_drv("patch_window[%s]: fallback fence done", label);
 	}
 }
 

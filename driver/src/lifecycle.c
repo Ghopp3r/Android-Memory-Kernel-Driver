@@ -16,6 +16,7 @@
 
 #include "comm.h"
 #include "kallsym.h"
+#include "kdebug.h"
 #include "lifecycle.h"
 #include "log.h"
 #include "memory.h"
@@ -55,6 +56,14 @@ int __init init_driver(void) {
 	int ret;
 
 	pr_drv("driver_entry\n");
+
+	/* Open the durable trace file for the install paths. /dev/kmsg via cat
+	 * loses the last ~16KB before a panic because of stdio buffering — the
+	 * exact window we care about. Writing through filp_open + vfs_fsync from
+	 * kernel context bypasses that, at the cost of touching the filesystem
+	 * from init/ioctl context (which is fine; both are sleepable). */
+	kdebug_init(KDEBUG_TRACE_PATH);
+	trace_drv("init_driver: starting");
 
 	/* Capture swapper_pg_dir + pagewalk depth before any hook path can run -- write_ro_memory's level_count==0 guard would silently no-op every patch otherwise. */
 	mm_globals_init();

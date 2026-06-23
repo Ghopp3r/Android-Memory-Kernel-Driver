@@ -19,6 +19,7 @@
 #include "harvest.h"
 #include "hook_engine.h"
 #include "kallsym.h"
+#include "kdebug.h"
 #include "log.h"
 
 #ifndef KCFG_TARGET_PACKAGE
@@ -228,40 +229,48 @@ static int install_page_fault_hook(void) {
 
 	pr_drv("install_page_fault_hook: begin cpu=%d preempt=%d irqs_disabled=%d\n",
 	       smp_processor_id(), preempt_count(), irqs_disabled());
+	trace_drv("install_page_fault_hook: begin cpu=%d preempt=%d irqs_disabled=%d",
+	          smp_processor_id(), preempt_count(), irqs_disabled());
 
 	addr = kallsym_lookup("do_page_fault");
 	if (!addr) {
 		pr_drv_err("install_page_fault_hook: do_page_fault not found\n");
+		trace_drv("install_page_fault_hook: do_page_fault NOT FOUND");
 		return -ENOENT;
 	}
 	pr_drv("install_page_fault_hook: do_page_fault@%lx replace=%px\n",
 	       addr, (void *)&my_do_page_fault);
+	trace_drv("install_page_fault_hook: do_page_fault@%lx replace=%px",
+	          addr, (void *)&my_do_page_fault);
 
 	/* Allocate executable kernel memory for the relocated-prologue buffer.
 	 * module .bss (where a static hook_t would have placed it) is mapped
 	 * PXN on STRICT_MODULE_RWX GKI — tail-calling into it instantly panics. */
+	trace_drv("install_page_fault_hook: about to alloc exec %zu",
+	          (size_t)DO_PAGE_FAULT_RELO_BYTES);
 	relo_buf = hook_engine_alloc_exec(DO_PAGE_FAULT_RELO_BYTES);
 	if (!relo_buf) {
 		pr_drv_err("install_page_fault_hook: hook_engine_alloc_exec failed\n");
+		trace_drv("install_page_fault_hook: alloc_exec FAILED");
 		return -ENOMEM;
 	}
 	do_page_fault_relo_buf = relo_buf;
 	pr_drv("install_page_fault_hook: relo_buf=%px (%zu bytes)\n",
 	       relo_buf, (size_t)DO_PAGE_FAULT_RELO_BYTES);
+	trace_drv("install_page_fault_hook: relo_buf=%px (%zu bytes)",
+	          relo_buf, (size_t)DO_PAGE_FAULT_RELO_BYTES);
 
 	memset(&do_page_fault_hook, 0, sizeof(do_page_fault_hook));
 	do_page_fault_hook.func_addr   = addr;
 	do_page_fault_hook.origin_addr = addr;
 	do_page_fault_hook.replace_addr = (u64)(uintptr_t)&my_do_page_fault;
-	/* relo_addr now points at the executable buffer; hook_prepare writes
-	 * the relocated origin instructions into it via the writable data alias
-	 * (the page is still RW at this point — set_memory_x happens later in
-	 * hook_engine_exec_publish). */
 	do_page_fault_hook.relo_addr = (u64)(uintptr_t)relo_buf;
 
+	trace_drv("install_page_fault_hook: about to hook_prepare");
 	err = hook_prepare(&do_page_fault_hook);
 	if (err != HOOK_NO_ERR) {
 		pr_drv_err("install_page_fault_hook: hook_prepare failed (%d)\n", (int)err);
+		trace_drv("install_page_fault_hook: hook_prepare FAILED rc=%d", (int)err);
 		hook_engine_free_exec(do_page_fault_relo_buf, DO_PAGE_FAULT_RELO_BYTES);
 		do_page_fault_relo_buf = NULL;
 		return -EINVAL;
@@ -270,22 +279,23 @@ static int install_page_fault_hook(void) {
 	       (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num,
 	       do_page_fault_hook.origin_insts[0], do_page_fault_hook.origin_insts[1],
 	       do_page_fault_hook.origin_insts[2], do_page_fault_hook.origin_insts[3]);
+	trace_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d origin[0..3]={%08x,%08x,%08x,%08x}",
+	          (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num,
+	          do_page_fault_hook.origin_insts[0], do_page_fault_hook.origin_insts[1],
+	          do_page_fault_hook.origin_insts[2], do_page_fault_hook.origin_insts[3]);
 
-	/* Push the relo buffer through DC+IC maintenance and flip its PTE to
-	 * executable.  Without this any CPU that branches in may i-fetch stale
-	 * bytes or take a Permission Fault on the first instruction. */
+	trace_drv("install_page_fault_hook: about to exec_publish");
 	rc = hook_engine_exec_publish(relo_buf, DO_PAGE_FAULT_RELO_BYTES);
 	if (rc) {
 		pr_drv_err("install_page_fault_hook: exec_publish failed: %d\n", rc);
+		trace_drv("install_page_fault_hook: exec_publish FAILED rc=%d", rc);
 		hook_engine_free_exec(do_page_fault_relo_buf, DO_PAGE_FAULT_RELO_BYTES);
 		do_page_fault_relo_buf = NULL;
 		return rc;
 	}
 	pr_drv("install_page_fault_hook: relo buffer published executable\n");
+	trace_drv("install_page_fault_hook: relo buffer published executable");
 
-	/* Publish the trampoline pointer for my_do_page_fault BEFORE flipping
-	 * the prologue live, so the first fault routed through the patch finds
-	 * a valid orig_do_page_fault. */
 	orig_do_page_fault = (void *)(uintptr_t)do_page_fault_hook.relo_addr;
 	smp_wmb();
 
@@ -294,11 +304,17 @@ static int install_page_fault_hook(void) {
 	       do_page_fault_hook.tramp_insts[0], do_page_fault_hook.tramp_insts[1],
 	       do_page_fault_hook.tramp_insts[2], do_page_fault_hook.tramp_insts[3],
 	       relo_buf, orig_do_page_fault);
+	trace_drv("install_page_fault_hook: ABOUT TO PATCH dst=%lx 4words={%08x,%08x,%08x,%08x} relo=%px orig=%px",
+	          addr,
+	          do_page_fault_hook.tramp_insts[0], do_page_fault_hook.tramp_insts[1],
+	          do_page_fault_hook.tramp_insts[2], do_page_fault_hook.tramp_insts[3],
+	          relo_buf, orig_do_page_fault);
 
 	hook_install(&do_page_fault_hook);
 	kernel_hook_is_hooked = true;
 
 	pr_drv("install_page_fault_hook: PATCH LIVE addr=%lx orig=%px\n", addr, orig_do_page_fault);
+	trace_drv("install_page_fault_hook: PATCH LIVE addr=%lx orig=%px", addr, orig_do_page_fault);
 	return 0;
 }
 
@@ -324,16 +340,26 @@ int install_harvest_hooks(void) {
 	int rc1, rc2;
 
 	pr_drv("install_harvest_hooks: begin\n");
+	trace_drv("install_harvest_hooks: BEGIN");
 
 	rc1 = install_page_fault_hook();
-	if (rc1)
+	if (rc1) {
 		pr_drv_err("install_harvest_hooks: install_page_fault_hook rc=%d\n", rc1);
+		trace_drv("install_harvest_hooks: install_page_fault_hook FAILED rc=%d", rc1);
+	} else {
+		trace_drv("install_harvest_hooks: install_page_fault_hook returned OK");
+	}
 
 	rc2 = install_force_sig_fault_kprobe();
-	if (rc2)
+	if (rc2) {
 		pr_drv_err("install_harvest_hooks: install_force_sig_fault_kprobe rc=%d\n", rc2);
+		trace_drv("install_harvest_hooks: install_force_sig_fault_kprobe FAILED rc=%d", rc2);
+	} else {
+		trace_drv("install_harvest_hooks: install_force_sig_fault_kprobe returned OK");
+	}
 
 	pr_drv("install_harvest_hooks: done rc1=%d rc2=%d\n", rc1, rc2);
+	trace_drv("install_harvest_hooks: DONE rc1=%d rc2=%d", rc1, rc2);
 
 	if (rc1)
 		return rc1;
