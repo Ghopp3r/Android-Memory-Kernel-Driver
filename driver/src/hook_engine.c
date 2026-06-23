@@ -15,6 +15,42 @@
 #include "log.h"
 #include "memory.h"
 
+/* Walk swapper_pg_dir (drv.m_pgd_va) for a kernel VA and return the leaf
+ * descriptor entry, or 0 on invalid/missing.  4KB-granule, 39-bit VA assumed
+ * (matches m_page_level==3 derived in lifecycle.c from TCR_EL1.T0SZ).
+ *
+ * Caller decodes flags: bit 0 = VALID, bit 7 = AP[2] (RDONLY), bit 53 = PXN,
+ * bit 54 = UXN.  For a successfully-published executable buffer we expect
+ * VALID=1, PXN=0; for a published RO buffer we additionally expect
+ * AP[2]=1. */
+static u64 walk_swapper_pte(u64 kva) {
+	u64 *table;
+	u64 entry = 0;
+	int shift;
+
+	if (!drv.m_pgd_va || drv.m_page_level < 1)
+		return 0;
+
+	table = (u64 *)(uintptr_t)drv.m_pgd_va;
+	shift = 12 + (drv.m_page_level - 1) * 9;  /* 3 levels (4K, 39-bit) → 30 */
+
+	while (shift >= 12) {
+		int idx = (int)((kva >> shift) & 0x1FFu);
+		entry = table[idx];
+		if ((entry & 3ull) == 0)
+			return 0;
+		/* Block descriptor at non-leaf level → return the block entry. */
+		if ((entry & 3ull) == 1ull && shift > 12)
+			return entry;
+		if (shift == 12)
+			return entry;
+		/* Table descriptor → descend. */
+		table = (u64 *)phys_to_virt(entry & 0xFFFFFFFFF000ull);
+		shift -= 9;
+	}
+	return entry;
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
 #include <linux/cfi.h>
 #endif
@@ -137,27 +173,27 @@ int hook_engine_exec_publish(void *buf, size_t bytes) {
 			pr_drv_warn("hook_engine_exec_publish: set_memory_ro(%lx,%d) failed: %d (continuing)\n",
 			            addr, npages, ret);
 	}
-	/* Self-test the new permissions via arm64 Address Translation instructions:
-	 *   AT S1E1R, addr  → query "can EL1 read this VA?"  result in PAR_EL1
-	 *   AT S1E1X, addr  → query "can EL1 execute this VA?" (PXN clear?)
-	 * PAR_EL1 bit 0 = F (fault). If F=1, low bits encode FSC; if F=0 the
-	 * translation succeeded with the requested permission. */
+	/* Self-test the actual page permissions on the live PTE: walk
+	 * swapper_pg_dir and decode the leaf flags. set_memory_x is supposed
+	 * to clear PXN (bit 53); set_memory_ro is supposed to set AP[2]
+	 * (bit 7). If we don't see PXN cleared, the executable mapping never
+	 * materialised — our module_alloc + set_memory_x approach is the
+	 * wrong allocator on this GKI build and we need __vmalloc_node_range
+	 * with PAGE_KERNEL_EXEC (or similar) instead. */
 	{
-		u64 par_r = 0, par_x = 0;
-		u64 va = (u64)buf;
-		asm volatile("at s1e1r, %0\n\tisb" : : "r"(va) : "memory");
-		asm volatile("mrs %0, par_el1" : "=r"(par_r));
-		asm volatile("at s1e1x, %0\n\tisb" : : "r"(va) : "memory");
-		asm volatile("mrs %0, par_el1" : "=r"(par_x));
-		trace_drv("exec_publish: PAR_EL1 read=0x%016llx exec=0x%016llx (F=read:%d exec:%d FSC=read:%02x exec:%02x)",
-		          par_r, par_x,
-		          (int)(par_r & 1), (int)(par_x & 1),
-		          (unsigned)((par_r >> 1) & 0x3F), (unsigned)((par_x >> 1) & 0x3F));
-		if (par_x & 1) {
-			trace_drv("exec_publish: WARNING: relo_buf NOT EXECUTABLE per AT-S1E1X (set_memory_x didn't take effect)");
-		} else {
-			trace_drv("exec_publish: relo_buf IS executable per AT-S1E1X");
-		}
+		u64 pte = walk_swapper_pte(addr);
+		int valid = (int)(pte & 1ull);
+		int rdonly = (int)((pte >> 7) & 1ull);
+		int pxn = (int)((pte >> 53) & 1ull);
+		int uxn = (int)((pte >> 54) & 1ull);
+		trace_drv("exec_publish: PTE=0x%016llx VALID=%d RDONLY(AP[2])=%d PXN=%d UXN=%d",
+		          pte, valid, rdonly, pxn, uxn);
+		if (!valid)
+			trace_drv("exec_publish: WARNING relo_buf PTE not VALID");
+		else if (pxn)
+			trace_drv("exec_publish: WARNING relo_buf still PXN — EL1 cannot fetch instructions from here");
+		else
+			trace_drv("exec_publish: relo_buf IS executable from EL1 (PXN clear)");
 	}
 
 	trace_drv("exec_publish: DONE");
