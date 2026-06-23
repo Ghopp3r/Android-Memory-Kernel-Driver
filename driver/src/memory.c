@@ -265,18 +265,25 @@ int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void 
 	mmap_read_lock(target_mm);
 	while (remain) {
 		u64 phys, lm_va;
-		size_t chunk = min_t(size_t, remain, 4096 - (size_t)(target_va & 0xFFF));
+		size_t off = (size_t)(target_va & 0xFFF);
+		size_t chunk = min_t(size_t, remain, 4096 - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
 
 		lm_va = drv_lm_va_from_phys(phys);
 
-		if (copy_to_user((void __user *)(uintptr_t)user_dst, (const void *)(uintptr_t)lm_va, chunk) != 0)
+		/* drv_lm_va_from_phys returns the page-aligned linear-map VA;
+		 * the in-page offset must be re-added here. The previous code
+		 * silently copied from the start of every source page, hiding
+		 * the bug behind write-then-read tests (both sides skipped the
+		 * offset and matched) but breaking MULTI_READ which honoured it. */
+		if (copy_to_user((void __user *)(uintptr_t)user_dst,
+		                 (const void *)(uintptr_t)lm_va + off, chunk) != 0)
 			pr_drv_err("copy_to_user failed: %s\n", __func__);
 
 		/* Flush dcache around the linear-map alias to defeat stale-cache reads of patched code. */
-		drv_flush_dcache_range(lm_va, chunk, &dcache_line_size_linear);
+		drv_flush_dcache_range(lm_va + off, chunk, &dcache_line_size_linear);
 
 skip:
 		remain -= chunk;
@@ -301,14 +308,16 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 	mmap_read_lock(target_mm);
 	while (remain) {
 		u64 phys, lm_va;
-		size_t chunk = min_t(size_t, remain, 4096 - (size_t)(target_va & 0xFFF));
+		size_t off = (size_t)(target_va & 0xFFF);
+		size_t chunk = min_t(size_t, remain, 4096 - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
 
 		lm_va = drv_lm_va_from_phys(phys);
 
-		(void)copy_from_user((void *)(uintptr_t)lm_va, (const void __user *)(uintptr_t)user_src, chunk);
+		(void)copy_from_user((void *)(uintptr_t)lm_va + off,
+		                     (const void __user *)(uintptr_t)user_src, chunk);
 skip:
 		remain -= chunk;
 		target_va += chunk;
@@ -448,7 +457,6 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 		return -EFAULT;
 	}
 
-	pr_drv("multi_read: count=%u descs=%px\n", count, descs);
 	mmap_read_lock(target_mm);
 	for (i = 0; i < count; i++) {
 		u64 src_va = staging[i].src_va;
@@ -456,35 +464,25 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 		size_t len = staging[i].len;
 		size_t remain = len;
 
-		pr_drv("multi_read[%u]: src_va=%llx user_dst=%llx len=%zu\n",
-		       i, (unsigned long long)src_va,
-		       (unsigned long long)user_dst, len);
-
 		if (!len)
 			continue;
 
 		while (remain) {
 			u64 phys, lm_va;
-			size_t chunk = min_t(size_t, remain, 4096 - (size_t)(src_va & 0xFFF));
-			int v_rc;
-			unsigned long not_copied;
+			size_t off = (size_t)(src_va & 0xFFF);
+			size_t chunk = min_t(size_t, remain, 4096 - off);
 
-			v_rc = vaddr_to_phys(target_mm, src_va, &phys);
-			if (v_rc != 0) {
-				pr_drv("multi_read[%u]: vaddr_to_phys(%llx) rc=%d skip\n",
-				       i, (unsigned long long)src_va, v_rc);
+			if (vaddr_to_phys(target_mm, src_va, &phys) != 0)
 				goto next;
-			}
 
+			/* Linear-map alias (same primitive read_process_memory_linear uses).
+			 * The page-aligned lm_va must be offset back to the actual source
+			 * byte via `+ off`. The earlier vmap+pfn_valid path failed silently
+			 * on vendor kernels where anonymous user pages didn't pass pfn_valid. */
 			lm_va = drv_lm_va_from_phys(phys);
-			pr_drv("multi_read[%u]: phys=%llx lm_va=%llx chunk=%zu\n",
-			       i, (unsigned long long)phys, (unsigned long long)lm_va, chunk);
 
-			not_copied = copy_to_user((void __user *)(uintptr_t)user_dst,
-			                          (const void *)(uintptr_t)lm_va + (src_va & 0xFFF),
-			                          chunk);
-			if (not_copied)
-				pr_drv("multi_read[%u]: copy_to_user not_copied=%lu\n", i, not_copied);
+			(void)copy_to_user((void __user *)(uintptr_t)user_dst,
+			                   (const void *)(uintptr_t)lm_va + off, chunk);
 next:
 			remain -= chunk;
 			src_va += chunk;
