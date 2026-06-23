@@ -11,7 +11,6 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
-#include "compat/compat.h"
 #include "harvest.h"
 #include "kallsym.h"
 #include "log.h"
@@ -19,6 +18,13 @@
 #ifndef KCFG_TARGET_PACKAGE
 #  define KCFG_TARGET_PACKAGE "cent.tmgp.sgame"
 #endif
+
+/* ARM64 ESR_ELx data-fault status code mask: bits 0..11 of the ISS field cover
+ * {FSC, WnR, S1PTW, CM} for data aborts. The composite value 0x1F4 unpacks to
+ * CM | S1PTW | WnR | permission-style FSC subset — the harvest tag the
+ * original .ko keys off. */
+#define ESR_DFSC_MASK 0xFFFu
+#define ESR_DFSC_HARVEST_VAL 0x1F4u
 
 /* drv.wz_hero_addr_map / drv.wz_hero_objects are the single source of truth
  * shared with comm.c's DRV_CMD_GAME_ASSET_READ_A / _B / TEAR_DOWN consumers

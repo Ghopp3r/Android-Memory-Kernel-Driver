@@ -17,7 +17,13 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
-#include "compat/compat.h"
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
+#include <linux/cfi.h>
+#endif
+#ifndef __nocfi
+#define __nocfi
+#endif
+
 #include "input_synth.h"
 #include "kallsym.h"
 #include "log.h"

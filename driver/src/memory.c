@@ -50,7 +50,6 @@
 #define __nocfi
 #endif
 
-#include "compat/compat.h"
 #include "kallsym.h"
 #include "log.h"
 #include "memory.h"

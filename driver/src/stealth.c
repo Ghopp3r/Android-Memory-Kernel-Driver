@@ -10,15 +10,16 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
-#include "compat/compat.h"
 #include "kallsym.h"
 #include "log.h"
 #include "stealth.h"
 
-/* KGSL never exports kgsl_process_private; layout is reconstructed from the binary. */
+/* KGSL never exports kgsl_process_private; layout is reconstructed from the
+ * binary (page_fault_harvest / gpu_stealth dossiers). Vendor (Qualcomm) struct
+ * kept private — no public header carries the layout. */
 #define KGSL_HOLDER_INNER_OFFSET 0x30
 #define KGSL_INNER_COUNT_OFFSET 0x40
-#define KGSL_INNER_RBROOT_OFFSET KGSL_DRIVER_RBTREE_OFFSET
+#define KGSL_INNER_RBROOT_OFFSET 0x48
 #define KGSL_INNER_STATE_OFFSET 0x70
 #define KGSL_INNER_STATE_READY_MASK 0x0F
 #define KGSL_INNER_STATE_READY_VALUE 0x01

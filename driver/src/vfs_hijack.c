@@ -22,7 +22,6 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
-#include "compat/compat.h"
 #include "log.h"
 #include "vfs_hijack.h"
 

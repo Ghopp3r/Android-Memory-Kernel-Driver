@@ -160,7 +160,6 @@ driver/
     uapi.h             shared kernel<->userspace ioctl surface
     types.h            internal driver state types
   src/
-    compat/compat.h    LINUX_VERSION_CODE gates + driver-private constants
     lifecycle.c        module init/exit + self-conceal (list_del + LIST_POISON)
     comm.c             reboot() handshake (kprobe on __arm64_sys_reboot) +
                        dispatch_ioctl router
