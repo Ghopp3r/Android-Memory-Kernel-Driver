@@ -275,14 +275,23 @@ static int install_page_fault_hook(void) {
 		do_page_fault_relo_buf = NULL;
 		return -EINVAL;
 	}
-	pr_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d origin[0..3]={%08x,%08x,%08x,%08x}\n",
-	       (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num,
-	       do_page_fault_hook.origin_insts[0], do_page_fault_hook.origin_insts[1],
-	       do_page_fault_hook.origin_insts[2], do_page_fault_hook.origin_insts[3]);
-	trace_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d origin[0..3]={%08x,%08x,%08x,%08x}",
-	          (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num,
-	          do_page_fault_hook.origin_insts[0], do_page_fault_hook.origin_insts[1],
-	          do_page_fault_hook.origin_insts[2], do_page_fault_hook.origin_insts[3]);
+	pr_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d\n",
+	       (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num);
+	trace_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d",
+	          (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num);
+	{
+		/* Full dump of every word the engine generated, so the next reboot
+		 * trace alone is enough to disassemble what actually executes at
+		 * relo_buf. The relo cursor (relo_insts_num) is the live word count;
+		 * the buffer itself is RELOCATE_INST_NUM (41) words wide. */
+		int i;
+		for (i = 0; i < TRAMPOLINE_MAX_NUM; i++)
+			trace_drv("  origin[%d] = 0x%08x", i, do_page_fault_hook.origin_insts[i]);
+		for (i = 0; i < do_page_fault_hook.tramp_insts_num && i < TRAMPOLINE_MAX_NUM; i++)
+			trace_drv("  tramp [%d] = 0x%08x", i, do_page_fault_hook.tramp_insts[i]);
+		for (i = 0; i < do_page_fault_hook.relo_insts_num && i < RELOCATE_INST_NUM; i++)
+			trace_drv("  relo  [%2d] = 0x%08x", i, do_page_fault_hook.relo_insts[i]);
+	}
 
 	trace_drv("install_page_fault_hook: about to exec_publish");
 	rc = hook_engine_exec_publish(relo_buf, DO_PAGE_FAULT_RELO_BYTES);
