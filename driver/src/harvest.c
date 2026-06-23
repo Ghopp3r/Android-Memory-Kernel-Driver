@@ -238,23 +238,15 @@ static int install_page_fault_hook(void) {
 	trace_drv("install_page_fault_hook: prepare ok tramp_words=%d relo_words=%d",
 	          (int)do_page_fault_hook.tramp_insts_num, (int)do_page_fault_hook.relo_insts_num);
 
-	/* PAC fix: hook_prepare relo_ignore-emits the original PACIASP into
-	 * relo_insts[0].  Executing PACIASP there re-signs X30 with the deeper
-	 * call-chain SP (drv_call_do_page_fault's local SP), so the real
-	 * do_page_fault epilogue's AUTIASP authenticates against the wrong
-	 * modifier and faults.  Patch the first relo word to NOP so the chain
-	 * stays PAC-balanced: my_do_page_fault has its own PACIASP/AUTIASP,
-	 * drv_call_do_page_fault has its own, and the inner relo_buf simply
-	 * skips the redundant sign. */
-	if (do_page_fault_hook.origin_insts[0] == 0xd503233fu /* PACIASP */ &&
-	    do_page_fault_hook.relo_insts_num >= 1 &&
-	    do_page_fault_hook.relo_insts[0] == 0xd503233fu) {
-		do_page_fault_hook.relo_insts[0] = 0xd503201fu; /* NOP */
-		trace_drv("install_page_fault_hook: PAC FIX — relo[0] PACIASP -> NOP");
-	}
+	/* Reverted: previously NOPed relo[0] PACIASP "to balance PAC chain",
+	 * but that broke things further — do_page_fault's epilogue runs
+	 * AUTIASP unconditionally, which then strips PAC bits from an unsigned
+	 * X30 and corrupts the return address.  Keep PACIASP in relo[0]; the
+	 * chain is PAC-balanced when each function (mdpf, drv_call, relo) does
+	 * its own PACIASP+AUTIASP pair against its own SP modifier. */
 
 	{
-		/* Full dump AFTER the PAC patch so the trace shows what will actually run. */
+		/* Full dump of what will actually run. */
 		int i;
 		for (i = 0; i < TRAMPOLINE_MAX_NUM; i++)
 			trace_drv("  origin[%d] = 0x%08x", i, do_page_fault_hook.origin_insts[i]);
@@ -317,7 +309,7 @@ static int install_force_sig_fault_kprobe(void) {
 }
 
 int install_harvest_hooks(void) {
-	int rc1, rc2;
+	int rc1;
 
 	pr_drv("install_harvest_hooks: begin\n");
 	trace_drv("install_harvest_hooks: BEGIN");
@@ -330,20 +322,18 @@ int install_harvest_hooks(void) {
 		trace_drv("install_harvest_hooks: install_page_fault_hook returned OK");
 	}
 
-	rc2 = install_force_sig_fault_kprobe();
-	if (rc2) {
-		pr_drv_err("install_harvest_hooks: install_force_sig_fault_kprobe rc=%d\n", rc2);
-		trace_drv("install_harvest_hooks: install_force_sig_fault_kprobe FAILED rc=%d", rc2);
-	} else {
-		trace_drv("install_harvest_hooks: install_force_sig_fault_kprobe returned OK");
-	}
+	/* ISOLATION: skipping install_force_sig_fault_kprobe so we can verify
+	 * the page-fault hook in isolation.  arm64_force_sig_fault_pre uses
+	 * fixed task->stack qword indices 2008/2014/2015/2036 (vendor-build-
+	 * specific) which may OOB-read on stock GKI; if THAT is the panic
+	 * source instead of the inline hook, this run survives and the next
+	 * iteration brings the kprobe back with a guarded pre_handler. */
+	trace_drv("install_harvest_hooks: SKIPPING install_force_sig_fault_kprobe (isolation)");
 
-	pr_drv("install_harvest_hooks: done rc1=%d rc2=%d\n", rc1, rc2);
-	trace_drv("install_harvest_hooks: DONE rc1=%d rc2=%d", rc1, rc2);
+	pr_drv("install_harvest_hooks: done rc1=%d (force_sig_fault_kprobe skipped)\n", rc1);
+	trace_drv("install_harvest_hooks: DONE rc1=%d (kprobe skipped)", rc1);
 
-	if (rc1)
-		return rc1;
-	return rc2;
+	return rc1;
 }
 
 int wz_hero_addr_map_get(unsigned int idx, struct wz_hero_slot *out) {
