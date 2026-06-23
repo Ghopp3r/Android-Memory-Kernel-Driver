@@ -142,7 +142,7 @@ struct helper_state {
 };
 
 #define HELPER_COMM "drv_probe_tgt"
-#define HELPER_PATTERN_SIZE 4096u   /* 1 base page — driver's pagewalk reliably handles this on every KMI */
+#define HELPER_PATTERN_SIZE (1u << 20)   /* 1 MiB — large enough for the 64 KiB / 1 MiB timing samples */
 
 /* Read the helper's libc.so base from /proc/<pid>/maps. */
 static uint64_t read_libc_base_from_proc(pid_t pid) {

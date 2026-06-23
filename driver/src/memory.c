@@ -459,28 +459,22 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 			continue;
 
 		while (remain) {
-			u64 phys;
-			struct page *pages[1];
-			void *mapped;
+			u64 phys, lm_va;
 			size_t chunk = min_t(size_t, remain, 4096 - (size_t)(src_va & 0xFFF));
 
 			if (vaddr_to_phys(target_mm, src_va, &phys) != 0)
 				goto next;
 
-			if (!pfn_valid(phys >> PAGE_SHIFT))
-				goto next;
+			/* Linear-map alias of the source page (same primitive
+			 * read_process_memory_linear uses). The previous vmap+pfn_valid
+			 * path silently returned empty buffers when pfn_valid() rejected
+			 * anonymous user pages on vendor kernels — drv_probe's MULTI_READ
+			 * caught it: rc=0, size_back=1, but dst stayed zero. */
+			lm_va = drv_lm_va_from_phys(phys);
 
-			pages[0] = pfn_to_page(phys >> PAGE_SHIFT);
-			if (!pages[0])
-				goto next;
-
-			mapped = vmap(pages, 1, VM_MAP, __pgprot(drv_vmap_prot()));
-			if (!mapped)
-				goto next;
-
-			/* Failures silently produce zero bytes for this element. */
-			(void)copy_to_user((void __user *)(uintptr_t)user_dst, (char *)mapped + (src_va & 0xFFF), chunk);
-			vunmap(mapped);
+			(void)copy_to_user((void __user *)(uintptr_t)user_dst,
+			                   (const void *)(uintptr_t)lm_va + (src_va & 0xFFF),
+			                   chunk);
 next:
 			remain -= chunk;
 			src_va += chunk;
