@@ -1,55 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* ARM64 inline-hook engine (KernelPatch port). */
 
-#include <linux/types.h>
-#include <linux/kernel.h>
 #include <linux/errno.h>
-#include <linux/mm.h>
+#include <linux/kernel.h>
+#include <linux/types.h>
 #include <linux/version.h>
 
 #include <driver/types.h>
 
 #include "hook_engine.h"
 #include "kallsym.h"
-#include "kdebug.h"
 #include "log.h"
 #include "memory.h"
-
-/* Walk swapper_pg_dir (drv.m_pgd_va) for a kernel VA and return the leaf
- * descriptor entry, or 0 on invalid/missing.  4KB-granule, 39-bit VA assumed
- * (matches m_page_level==3 derived in lifecycle.c from TCR_EL1.T0SZ).
- *
- * Caller decodes flags: bit 0 = VALID, bit 7 = AP[2] (RDONLY), bit 53 = PXN,
- * bit 54 = UXN.  For a successfully-published executable buffer we expect
- * VALID=1, PXN=0; for a published RO buffer we additionally expect
- * AP[2]=1. */
-static u64 walk_swapper_pte(u64 kva) {
-	u64 *table;
-	u64 entry = 0;
-	int shift;
-
-	if (!drv.m_pgd_va || drv.m_page_level < 1)
-		return 0;
-
-	table = (u64 *)(uintptr_t)drv.m_pgd_va;
-	shift = 12 + (drv.m_page_level - 1) * 9;  /* 3 levels (4K, 39-bit) → 30 */
-
-	while (shift >= 12) {
-		int idx = (int)((kva >> shift) & 0x1FFu);
-		entry = table[idx];
-		if ((entry & 3ull) == 0)
-			return 0;
-		/* Block descriptor at non-leaf level → return the block entry. */
-		if ((entry & 3ull) == 1ull && shift > 12)
-			return entry;
-		if (shift == 12)
-			return entry;
-		/* Table descriptor → descend. */
-		table = (u64 *)phys_to_virt(entry & 0xFFFFFFFFF000ull);
-		shift -= 9;
-	}
-	return entry;
-}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
 #include <linux/cfi.h>
@@ -58,31 +20,12 @@ static u64 walk_swapper_pte(u64 kva) {
 #define __nocfi
 #endif
 
-/* -------- Exec-buffer + atomic patch primitives (resolved via kallsyms) -------- */
+typedef int  (*drv_aarch64_insn_patch_text_fn_t)(void *addrs[], u32 insns[], int cnt);
+typedef void (*drv_caches_clean_inval_pou_fn_t)(unsigned long start, unsigned long end);
 
-typedef void *(*drv_module_alloc_fn_t)(unsigned long size);
-typedef void  (*drv_vfree_fn_t)(const void *addr);
-typedef int   (*drv_set_memory_fn_t)(unsigned long addr, int numpages);
-typedef int   (*drv_aarch64_insn_patch_text_fn_t)(void *addrs[], u32 insns[], int cnt);
-typedef void  (*drv_caches_clean_inval_pou_fn_t)(unsigned long start, unsigned long end);
-
-static drv_module_alloc_fn_t            drv_module_alloc_ptr;
-static drv_vfree_fn_t                   drv_vfree_ptr;
-static drv_set_memory_fn_t              drv_set_memory_x_ptr;
-static drv_set_memory_fn_t              drv_set_memory_ro_ptr;
-static drv_set_memory_fn_t              drv_set_memory_nx_ptr;
 static drv_aarch64_insn_patch_text_fn_t drv_aarch64_insn_patch_text_ptr;
 static drv_caches_clean_inval_pou_fn_t  drv_caches_clean_inval_pou_ptr;
 
-static __nocfi noinline void *drv_call_module_alloc(drv_module_alloc_fn_t fn, unsigned long size) {
-	return fn(size);
-}
-static __nocfi noinline void drv_call_vfree(drv_vfree_fn_t fn, const void *p) {
-	fn(p);
-}
-static __nocfi noinline int drv_call_set_memory(drv_set_memory_fn_t fn, unsigned long a, int n) {
-	return fn(a, n);
-}
 static __nocfi noinline int drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_fn_t fn,
                                                              void *addrs[], u32 insns[], int cnt) {
 	return fn(addrs, insns, cnt);
@@ -92,123 +35,13 @@ static __nocfi noinline void drv_call_caches_clean_inval_pou(drv_caches_clean_in
 	fn(s, e);
 }
 
-/* Resolve all hook-engine-only kernel symbols on first call (lazily, from
- * process context — never from atomic context). Logged once. */
-static int hook_engine_resolve_symbols(void) {
-	if (drv_module_alloc_ptr)
-		return 0;
-
-	drv_module_alloc_ptr            = (drv_module_alloc_fn_t)            kallsym_lookup("module_alloc");
-	drv_vfree_ptr                   = (drv_vfree_fn_t)                   kallsym_lookup("vfree");
-	drv_set_memory_x_ptr            = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_x");
-	drv_set_memory_ro_ptr           = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_ro");
-	drv_set_memory_nx_ptr           = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_nx");
-	drv_aarch64_insn_patch_text_ptr = (drv_aarch64_insn_patch_text_fn_t) kallsym_lookup("aarch64_insn_patch_text");
-	drv_caches_clean_inval_pou_ptr  = (drv_caches_clean_inval_pou_fn_t)  kallsym_lookup("caches_clean_inval_pou");
-
-	pr_drv("hook_engine resolve: module_alloc=%p vfree=%p set_x=%p set_ro=%p set_nx=%p insn_patch=%p caches=%p\n",
-	       drv_module_alloc_ptr, drv_vfree_ptr,
-	       drv_set_memory_x_ptr, drv_set_memory_ro_ptr, drv_set_memory_nx_ptr,
-	       drv_aarch64_insn_patch_text_ptr, drv_caches_clean_inval_pou_ptr);
-	trace_drv("hook_engine resolve: module_alloc=%p vfree=%p set_x=%p set_ro=%p set_nx=%p insn_patch=%p caches=%p",
-	          drv_module_alloc_ptr, drv_vfree_ptr,
-	          drv_set_memory_x_ptr, drv_set_memory_ro_ptr, drv_set_memory_nx_ptr,
-	          drv_aarch64_insn_patch_text_ptr, drv_caches_clean_inval_pou_ptr);
-
-	if (!drv_module_alloc_ptr || !drv_vfree_ptr || !drv_set_memory_x_ptr) {
-		pr_drv_err("hook_engine: cannot resolve required symbols\n");
-		trace_drv("hook_engine: cannot resolve required symbols");
-		return -ENOENT;
-	}
-	return 0;
-}
-
-void *hook_engine_alloc_exec(size_t bytes) {
-	void *p;
-	if (hook_engine_resolve_symbols())
-		return NULL;
-	p = drv_call_module_alloc(drv_module_alloc_ptr, (unsigned long)bytes);
-	if (!p)
-		pr_drv_err("hook_engine_alloc_exec: module_alloc(%zu) failed\n", bytes);
-	return p;
-}
-
-int hook_engine_exec_publish(void *buf, size_t bytes) {
-	unsigned long addr = (unsigned long)buf;
-	int npages = (int)((bytes + PAGE_SIZE - 1u) / PAGE_SIZE);
-	int ret;
-
-	if (!buf)
-		return -EINVAL;
-	if (hook_engine_resolve_symbols())
-		return -ENOSYS;
-
-	trace_drv("exec_publish: buf=%px bytes=%zu addr=%lx npages=%d", buf, bytes, addr, npages);
-
-	/* Push every store to PoU and broadcast-invalidate the I-cache over the
-	 * range so any remote CPU re-fetches the freshly-written instructions. */
-	if (drv_caches_clean_inval_pou_ptr) {
-		trace_drv("exec_publish: calling caches_clean_inval_pou");
-		drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_ptr, addr, addr + bytes);
-	} else {
-		trace_drv("exec_publish: caches_clean_inval_pou not resolved, fallback asm fence");
-		asm volatile("dsb ish" ::: "memory");
-		asm volatile("ic ialluis" ::: "memory");
-		asm volatile("dsb ish" ::: "memory");
-		asm volatile("isb" ::: "memory");
-	}
-	trace_drv("exec_publish: cache maintenance done, calling set_memory_x");
-
-	/* module_alloc returns RW+NX on arm64 GKI — flip to executable. */
-	ret = drv_call_set_memory(drv_set_memory_x_ptr, addr, npages);
-	if (ret) {
-		pr_drv_err("hook_engine_exec_publish: set_memory_x(%lx,%d) failed: %d\n", addr, npages, ret);
-		trace_drv("exec_publish: set_memory_x FAILED rc=%d", ret);
-		return ret;
-	}
-	trace_drv("exec_publish: set_memory_x ok, calling set_memory_ro");
-	if (drv_set_memory_ro_ptr) {
-		ret = drv_call_set_memory(drv_set_memory_ro_ptr, addr, npages);
-		if (ret)
-			pr_drv_warn("hook_engine_exec_publish: set_memory_ro(%lx,%d) failed: %d (continuing)\n",
-			            addr, npages, ret);
-	}
-	/* Self-test the actual page permissions on the live PTE: walk
-	 * swapper_pg_dir and decode the leaf flags. set_memory_x is supposed
-	 * to clear PXN (bit 53); set_memory_ro is supposed to set AP[2]
-	 * (bit 7). If we don't see PXN cleared, the executable mapping never
-	 * materialised — our module_alloc + set_memory_x approach is the
-	 * wrong allocator on this GKI build and we need __vmalloc_node_range
-	 * with PAGE_KERNEL_EXEC (or similar) instead. */
-	{
-		u64 pte = walk_swapper_pte(addr);
-		int valid = (int)(pte & 1ull);
-		int rdonly = (int)((pte >> 7) & 1ull);
-		int pxn = (int)((pte >> 53) & 1ull);
-		int uxn = (int)((pte >> 54) & 1ull);
-		trace_drv("exec_publish: PTE=0x%016llx VALID=%d RDONLY(AP[2])=%d PXN=%d UXN=%d",
-		          pte, valid, rdonly, pxn, uxn);
-		if (!valid)
-			trace_drv("exec_publish: WARNING relo_buf PTE not VALID");
-		else if (pxn)
-			trace_drv("exec_publish: WARNING relo_buf still PXN — EL1 cannot fetch instructions from here");
-		else
-			trace_drv("exec_publish: relo_buf IS executable from EL1 (PXN clear)");
-	}
-
-	trace_drv("exec_publish: DONE");
-	return 0;
-}
-
-void hook_engine_free_exec(void *buf, size_t bytes) {
-	unsigned long addr = (unsigned long)buf;
-	int npages = (int)((bytes + PAGE_SIZE - 1u) / PAGE_SIZE);
-	if (!buf || !drv_vfree_ptr)
+/* Lazy resolve from process context. caches_clean_inval_pou is 5.15+; on
+ * older KMIs the lookup returns NULL and the per-call fallback fences are used. */
+static void hook_engine_resolve_symbols(void) {
+	if (drv_aarch64_insn_patch_text_ptr)
 		return;
-	/* Restore RW+NX so the page is safe to recycle. */
-	if (drv_set_memory_nx_ptr)
-		(void)drv_call_set_memory(drv_set_memory_nx_ptr, addr, npages);
-	drv_call_vfree(drv_vfree_ptr, buf);
+	drv_aarch64_insn_patch_text_ptr = (drv_aarch64_insn_patch_text_fn_t)kallsym_lookup("aarch64_insn_patch_text");
+	drv_caches_clean_inval_pou_ptr  = (drv_caches_clean_inval_pou_fn_t) kallsym_lookup("caches_clean_inval_pou");
 }
 
 /* Top-bits values that identify the encoding class once masked with inst_masks[]. */
@@ -643,31 +476,22 @@ hook_err_t hook_prepare(hook_t *hook) {
 	return HOOK_NO_ERR;
 }
 
-/* Apply the trampoline atomically across the multi-word patch window.
+/* Apply the multi-word trampoline atomically.
  *
- * Fast path: aarch64_insn_patch_text(addrs[], insns[], cnt) — the kernel's
- * canonical batched-poke primitive.  It internally stop_machine()'s, applies
- * every word, then issues a broadcast IC IALLUIS + ISB on every CPU.  Using
- * it is what KernelPatch's hotpatch_cb pattern is doing under the hood.
+ * Fast path: aarch64_insn_patch_text — kernel's batched poke primitive that
+ * internally stop_machine()'s and broadcasts IC IALLUIS on every CPU.
  *
- * Fallback (older / locked-down kernels where the symbol is hidden): plain
- * write_ro_memory then a manual DSB ISH + IC IALLUIS + DSB ISH + ISB — closes
- * the I-cache incoherence window but does NOT close the torn-fetch window;
- * acceptable only when the symbol genuinely isn't available. */
-static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt, const char *label) {
+ * Fallback (older / locked-down kernels): write_ro_memory + manual fence.
+ * Closes the I-cache incoherence window but NOT the torn-fetch one — only
+ * use when the symbol is genuinely unavailable. */
+static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt) {
 	void *addrs[TRAMPOLINE_MAX_NUM];
 	int i, rc;
 
-	(void)hook_engine_resolve_symbols();
-
-	pr_drv("hook_engine_patch_window[%s]: dst=%llx cnt=%d insn_patch=%p\n",
-	       label, (unsigned long long)dst, cnt, drv_aarch64_insn_patch_text_ptr);
-	trace_drv("patch_window[%s]: dst=%llx cnt=%d insn_patch=%p",
-	          label, (unsigned long long)dst, cnt, drv_aarch64_insn_patch_text_ptr);
+	hook_engine_resolve_symbols();
 
 	if (cnt <= 0 || cnt > TRAMPOLINE_MAX_NUM) {
-		pr_drv_err("hook_engine_patch_window[%s]: bad cnt=%d\n", label, cnt);
-		trace_drv("patch_window[%s]: BAD cnt=%d", label, cnt);
+		pr_drv_err("hook_engine_patch_window: bad cnt=%d\n", cnt);
 		return;
 	}
 
@@ -675,43 +499,27 @@ static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt, const char *l
 		addrs[i] = (void *)(uintptr_t)(dst + (u64)i * 4u);
 
 	if (drv_aarch64_insn_patch_text_ptr) {
-		trace_drv("patch_window[%s]: calling aarch64_insn_patch_text", label);
 		rc = drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_ptr, addrs, insns, cnt);
-		if (rc) {
-			pr_drv_err("hook_engine_patch_window[%s]: aarch64_insn_patch_text rc=%d\n", label, rc);
-			trace_drv("patch_window[%s]: aarch64_insn_patch_text FAILED rc=%d", label, rc);
-		} else {
-			trace_drv("patch_window[%s]: aarch64_insn_patch_text OK", label);
-		}
-	} else {
-		trace_drv("patch_window[%s]: aarch64_insn_patch_text NOT resolved, falling back to write_ro_memory", label);
-		(void)write_ro_memory(dst, insns, (u64)cnt * 4u);
-		trace_drv("patch_window[%s]: write_ro_memory returned, issuing fence/IC IALLUIS", label);
+		if (rc)
+			pr_drv_err("hook_engine_patch_window: aarch64_insn_patch_text rc=%d\n", rc);
+		return;
+	}
+
+	(void)write_ro_memory(dst, insns, (u64)cnt * 4u);
+	if (drv_caches_clean_inval_pou_ptr)
+		drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_ptr, dst, dst + (u64)cnt * 4u);
+	else {
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("ic ialluis" ::: "memory");
 		asm volatile("dsb ish" ::: "memory");
 		asm volatile("isb" ::: "memory");
-		trace_drv("patch_window[%s]: fallback fence done", label);
 	}
 }
 
 void hook_install(hook_t *hook) {
-	pr_drv("hook_install: enter func=%llx dst=%llx repl=%llx relo=%llx tramp_words=%d\n",
-	       (unsigned long long)hook->func_addr,
-	       (unsigned long long)hook->origin_addr,
-	       (unsigned long long)hook->replace_addr,
-	       (unsigned long long)hook->relo_addr,
-	       (int)hook->tramp_insts_num);
-
-	hook_engine_patch_window(hook->origin_addr, hook->tramp_insts, hook->tramp_insts_num, "install");
-
-	pr_drv("hook_install: done func=%llx\n", (unsigned long long)hook->func_addr);
+	hook_engine_patch_window(hook->origin_addr, hook->tramp_insts, hook->tramp_insts_num);
 }
 
 void hook_remove(hook_t *hook) {
-	pr_drv("hook_remove: enter func=%llx\n", (unsigned long long)hook->func_addr);
-
-	hook_engine_patch_window(hook->origin_addr, hook->origin_insts, hook->tramp_insts_num, "remove");
-
-	pr_drv("hook_remove: done func=%llx\n", (unsigned long long)hook->func_addr);
+	hook_engine_patch_window(hook->origin_addr, hook->origin_insts, hook->tramp_insts_num);
 }

@@ -19,18 +19,12 @@ struct wz_hero_slot {
 #define WZ_TARGET_PKG "cent.tmgp.sgame"
 #define WZ_ESR_LOW12 0x1F4u
 
-/* Installed via hook_engine; tail-calls orig_do_page_fault and returns whatever
- * the original do_page_fault returns.  Signature MUST match the kernel's real
- * `int do_page_fault(unsigned long far, unsigned long esr, struct pt_regs *)`
- * — do_mem_abort consumes the return value via `if (!inf->fn(...)) return;`,
- * so a void replacement leaves X0 with garbage and triggers arm64_notify_die()
- * on every fault. */
-int my_do_page_fault(unsigned long far, unsigned long esr, struct pt_regs *regs);
-
-/* Kprobe fallback: reads user-mode reg file from task->stack at fixed byte offsets (0x3EC0..0x3FA0) — NOT the kprobe trap frame. */
+/* Both harvest entry points are kprobe pre_handlers. */
+int do_page_fault_pre(struct kprobe *p, struct pt_regs *regs);
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs);
 
 int install_harvest_hooks(void);
+void uninstall_harvest_hooks(void);
 
 int wz_hero_addr_map_get(unsigned int idx, struct wz_hero_slot *out);
 void wz_hero_addr_map_clear(void);
