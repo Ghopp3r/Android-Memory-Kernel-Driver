@@ -65,10 +65,29 @@ s32 ret_absolute(u32 *buf,        u64 addr);
 
 hook_err_t hook_prepare(hook_t *hook);
 
-/* Uses write_ro_memory () (NOT stop_machine); target must be quiescent. */
+/* Patches the live prologue atomically via aarch64_insn_patch_text (stop_machine inside) when
+ * resolvable, otherwise falls back to write_ro_memory + broadcast IC IALLUIS. */
 void hook_install(hook_t *hook);
 
 void hook_remove(hook_t *hook);
+
+/* Allocate an executable, initially RW kernel-text-style buffer of @bytes
+ * via module_alloc.  Returns NULL on failure.  Caller writes instructions
+ * into the returned pointer, then MUST call hook_engine_exec_publish()
+ * before any CPU branches into the buffer.
+ *
+ * Required because on GKI with CONFIG_STRICT_MODULE_RWX=y, module .bss is
+ * mapped PXN — executing trampoline instructions from a file-static
+ * hook_t.relo_insts[] takes an instant Permission Fault at EL1. */
+void *hook_engine_alloc_exec(size_t bytes);
+
+/* DC CVAU + DSB ISH + IC IVAU + DSB ISH + ISB over [buf, buf+bytes), then
+ * set_memory_x (and set_memory_ro for safety) so the page can be branched
+ * into from any CPU.  Returns 0 on success or a negative errno. */
+int hook_engine_exec_publish(void *buf, size_t bytes);
+
+/* Free a buffer previously returned by hook_engine_alloc_exec(). */
+void hook_engine_free_exec(void *buf, size_t bytes);
 
 /* Per-class trampoline length (4-byte units), indexed by class id: 0 B  / 1 B.cond / 2 BL / 3 ADR / 4 ADRP / 5..11 LDR variants / 12 CBZ / 13 CBNZ / 14 TBZ / 15 TBNZ / 16 IGNORE Initialiser: { 6,8,8,4,4,6,6,6,8,8,8,8,6,6,6,6,2 }. */
 extern const s32 relo_len[17];

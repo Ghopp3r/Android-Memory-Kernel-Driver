@@ -3,12 +3,140 @@
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/errno.h>
+#include <linux/mm.h>
+#include <linux/version.h>
 
 #include <driver/types.h>
 
 #include "hook_engine.h"
+#include "kallsym.h"
 #include "log.h"
 #include "memory.h"
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
+#include <linux/cfi.h>
+#endif
+#ifndef __nocfi
+#define __nocfi
+#endif
+
+/* -------- Exec-buffer + atomic patch primitives (resolved via kallsyms) -------- */
+
+typedef void *(*drv_module_alloc_fn_t)(unsigned long size);
+typedef void  (*drv_vfree_fn_t)(const void *addr);
+typedef int   (*drv_set_memory_fn_t)(unsigned long addr, int numpages);
+typedef int   (*drv_aarch64_insn_patch_text_fn_t)(void *addrs[], u32 insns[], int cnt);
+typedef void  (*drv_caches_clean_inval_pou_fn_t)(unsigned long start, unsigned long end);
+
+static drv_module_alloc_fn_t            drv_module_alloc_ptr;
+static drv_vfree_fn_t                   drv_vfree_ptr;
+static drv_set_memory_fn_t              drv_set_memory_x_ptr;
+static drv_set_memory_fn_t              drv_set_memory_ro_ptr;
+static drv_set_memory_fn_t              drv_set_memory_nx_ptr;
+static drv_aarch64_insn_patch_text_fn_t drv_aarch64_insn_patch_text_ptr;
+static drv_caches_clean_inval_pou_fn_t  drv_caches_clean_inval_pou_ptr;
+
+static __nocfi noinline void *drv_call_module_alloc(drv_module_alloc_fn_t fn, unsigned long size) {
+	return fn(size);
+}
+static __nocfi noinline void drv_call_vfree(drv_vfree_fn_t fn, const void *p) {
+	fn(p);
+}
+static __nocfi noinline int drv_call_set_memory(drv_set_memory_fn_t fn, unsigned long a, int n) {
+	return fn(a, n);
+}
+static __nocfi noinline int drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_fn_t fn,
+                                                             void *addrs[], u32 insns[], int cnt) {
+	return fn(addrs, insns, cnt);
+}
+static __nocfi noinline void drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_fn_t fn,
+                                                             unsigned long s, unsigned long e) {
+	fn(s, e);
+}
+
+/* Resolve all hook-engine-only kernel symbols on first call (lazily, from
+ * process context — never from atomic context). Logged once. */
+static int hook_engine_resolve_symbols(void) {
+	if (drv_module_alloc_ptr)
+		return 0;
+
+	drv_module_alloc_ptr            = (drv_module_alloc_fn_t)            kallsym_lookup("module_alloc");
+	drv_vfree_ptr                   = (drv_vfree_fn_t)                   kallsym_lookup("vfree");
+	drv_set_memory_x_ptr            = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_x");
+	drv_set_memory_ro_ptr           = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_ro");
+	drv_set_memory_nx_ptr           = (drv_set_memory_fn_t)              kallsym_lookup("set_memory_nx");
+	drv_aarch64_insn_patch_text_ptr = (drv_aarch64_insn_patch_text_fn_t) kallsym_lookup("aarch64_insn_patch_text");
+	drv_caches_clean_inval_pou_ptr  = (drv_caches_clean_inval_pou_fn_t)  kallsym_lookup("caches_clean_inval_pou");
+
+	pr_drv("hook_engine resolve: module_alloc=%p vfree=%p set_x=%p set_ro=%p set_nx=%p insn_patch=%p caches=%p\n",
+	       drv_module_alloc_ptr, drv_vfree_ptr,
+	       drv_set_memory_x_ptr, drv_set_memory_ro_ptr, drv_set_memory_nx_ptr,
+	       drv_aarch64_insn_patch_text_ptr, drv_caches_clean_inval_pou_ptr);
+
+	if (!drv_module_alloc_ptr || !drv_vfree_ptr || !drv_set_memory_x_ptr) {
+		pr_drv_err("hook_engine: cannot resolve required symbols\n");
+		return -ENOENT;
+	}
+	return 0;
+}
+
+void *hook_engine_alloc_exec(size_t bytes) {
+	void *p;
+	if (hook_engine_resolve_symbols())
+		return NULL;
+	p = drv_call_module_alloc(drv_module_alloc_ptr, (unsigned long)bytes);
+	if (!p)
+		pr_drv_err("hook_engine_alloc_exec: module_alloc(%zu) failed\n", bytes);
+	return p;
+}
+
+int hook_engine_exec_publish(void *buf, size_t bytes) {
+	unsigned long addr = (unsigned long)buf;
+	int npages = (int)((bytes + PAGE_SIZE - 1u) / PAGE_SIZE);
+	int ret;
+
+	if (!buf)
+		return -EINVAL;
+	if (hook_engine_resolve_symbols())
+		return -ENOSYS;
+
+	/* Push every store to PoU and broadcast-invalidate the I-cache over the
+	 * range so any remote CPU re-fetches the freshly-written instructions. */
+	if (drv_caches_clean_inval_pou_ptr) {
+		drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_ptr, addr, addr + bytes);
+	} else {
+		asm volatile("dsb ish" ::: "memory");
+		asm volatile("ic ialluis" ::: "memory");
+		asm volatile("dsb ish" ::: "memory");
+		asm volatile("isb" ::: "memory");
+	}
+
+	/* module_alloc returns RW+NX on arm64 GKI — flip to executable. */
+	ret = drv_call_set_memory(drv_set_memory_x_ptr, addr, npages);
+	if (ret) {
+		pr_drv_err("hook_engine_exec_publish: set_memory_x(%lx,%d) failed: %d\n", addr, npages, ret);
+		return ret;
+	}
+	if (drv_set_memory_ro_ptr) {
+		ret = drv_call_set_memory(drv_set_memory_ro_ptr, addr, npages);
+		if (ret)
+			pr_drv_warn("hook_engine_exec_publish: set_memory_ro(%lx,%d) failed: %d (continuing)\n",
+			            addr, npages, ret);
+	}
+	return 0;
+}
+
+void hook_engine_free_exec(void *buf, size_t bytes) {
+	unsigned long addr = (unsigned long)buf;
+	int npages = (int)((bytes + PAGE_SIZE - 1u) / PAGE_SIZE);
+	if (!buf || !drv_vfree_ptr)
+		return;
+	/* Restore RW+NX so the page is safe to recycle. */
+	if (drv_set_memory_nx_ptr)
+		(void)drv_call_set_memory(drv_set_memory_nx_ptr, addr, npages);
+	drv_call_vfree(drv_vfree_ptr, buf);
+}
 
 /* Top-bits values that identify the encoding class once masked with inst_masks[]. */
 #define INST_B 0x14000000u
@@ -442,18 +570,64 @@ hook_err_t hook_prepare(hook_t *hook) {
 	return HOOK_NO_ERR;
 }
 
+/* Apply the trampoline atomically across the multi-word patch window.
+ *
+ * Fast path: aarch64_insn_patch_text(addrs[], insns[], cnt) — the kernel's
+ * canonical batched-poke primitive.  It internally stop_machine()'s, applies
+ * every word, then issues a broadcast IC IALLUIS + ISB on every CPU.  Using
+ * it is what KernelPatch's hotpatch_cb pattern is doing under the hood.
+ *
+ * Fallback (older / locked-down kernels where the symbol is hidden): plain
+ * write_ro_memory then a manual DSB ISH + IC IALLUIS + DSB ISH + ISB — closes
+ * the I-cache incoherence window but does NOT close the torn-fetch window;
+ * acceptable only when the symbol genuinely isn't available. */
+static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt, const char *label) {
+	void *addrs[TRAMPOLINE_MAX_NUM];
+	int i, rc;
+
+	(void)hook_engine_resolve_symbols();
+
+	pr_drv("hook_engine_patch_window[%s]: dst=%llx cnt=%d insn_patch=%p\n",
+	       label, (unsigned long long)dst, cnt, drv_aarch64_insn_patch_text_ptr);
+
+	if (cnt <= 0 || cnt > TRAMPOLINE_MAX_NUM) {
+		pr_drv_err("hook_engine_patch_window[%s]: bad cnt=%d\n", label, cnt);
+		return;
+	}
+
+	for (i = 0; i < cnt; i++)
+		addrs[i] = (void *)(uintptr_t)(dst + (u64)i * 4u);
+
+	if (drv_aarch64_insn_patch_text_ptr) {
+		rc = drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_ptr, addrs, insns, cnt);
+		if (rc)
+			pr_drv_err("hook_engine_patch_window[%s]: aarch64_insn_patch_text rc=%d\n", label, rc);
+	} else {
+		(void)write_ro_memory(dst, insns, (u64)cnt * 4u);
+		asm volatile("dsb ish" ::: "memory");
+		asm volatile("ic ialluis" ::: "memory");
+		asm volatile("dsb ish" ::: "memory");
+		asm volatile("isb" ::: "memory");
+	}
+}
+
 void hook_install(hook_t *hook) {
-	pr_drv("Hook func: %llx, origin: %llx, replace: %llx, relocate: %llx, chain: %llx\n", (unsigned long long)hook->func_addr, (unsigned long long)hook->origin_addr, (unsigned long long)hook->replace_addr, (unsigned long long)hook->relo_addr, (unsigned long long)(uintptr_t)hook);
+	pr_drv("hook_install: enter func=%llx dst=%llx repl=%llx relo=%llx tramp_words=%d\n",
+	       (unsigned long long)hook->func_addr,
+	       (unsigned long long)hook->origin_addr,
+	       (unsigned long long)hook->replace_addr,
+	       (unsigned long long)hook->relo_addr,
+	       (int)hook->tramp_insts_num);
 
-	/* write_ro_memory walks m_pgd_va to clear PTE_RDONLY around the write, then restores it. */
-	(void)write_ro_memory(hook->origin_addr, hook->tramp_insts, (u64)hook->tramp_insts_num * 4u);
+	hook_engine_patch_window(hook->origin_addr, hook->tramp_insts, hook->tramp_insts_num, "install");
 
-	pr_drv("Hook func: %llx succsseed\n", (unsigned long long)hook->func_addr);
+	pr_drv("hook_install: done func=%llx\n", (unsigned long long)hook->func_addr);
 }
 
 void hook_remove(hook_t *hook) {
-	/* Caller is responsible for ensuring no CPU is mid-trampoline. */
-	(void)write_ro_memory(hook->origin_addr, hook->origin_insts, (u64)hook->tramp_insts_num * 4u);
+	pr_drv("hook_remove: enter func=%llx\n", (unsigned long long)hook->func_addr);
 
-	pr_drv("Unhook func: %llx\n", (unsigned long long)hook->func_addr);
+	hook_engine_patch_window(hook->origin_addr, hook->origin_insts, hook->tramp_insts_num, "remove");
+
+	pr_drv("hook_remove: done func=%llx\n", (unsigned long long)hook->func_addr);
 }
