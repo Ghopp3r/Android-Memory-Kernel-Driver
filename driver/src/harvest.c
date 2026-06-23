@@ -282,11 +282,22 @@ static int install_page_fault_hook(void) {
 	          do_page_fault_hook.tramp_insts[2], do_page_fault_hook.tramp_insts[3],
 	          relo_buf, orig_do_page_fault);
 
-	hook_install(&do_page_fault_hook);
-	kernel_hook_is_hooked = true;
+	/* ISOLATION: skipping the actual hook_install (the kernel-text patch).
+	 * Everything else runs: relo alloc, hook_prepare, exec_publish.
+	 * If device survives → the prologue patch itself is the panic source
+	 * (do_page_fault is somehow protected on this device — KNOX/RKP-style
+	 * runtime integrity check that pages the kernel when do_page_fault text
+	 * changes — or aarch64_insn_patch_text fast-path leaves us with a
+	 * non-atomic state that the kernel watchdog kills).
+	 * If device still reboots → the panic is in the install path's earlier
+	 * primitives (module_alloc / set_memory_x / etc.), not the patch. */
+	trace_drv("install_page_fault_hook: SKIPPING hook_install (isolation, no patch applied)");
+	pr_drv("install_page_fault_hook: SKIPPING hook_install\n");
 
-	pr_drv("install_page_fault_hook: PATCH LIVE addr=%lx orig=%px\n", addr, orig_do_page_fault);
-	trace_drv("install_page_fault_hook: PATCH LIVE addr=%lx orig=%px", addr, orig_do_page_fault);
+	/* kernel_hook_is_hooked left FALSE so a second install attempt would re-run, but we won't get there. */
+
+	pr_drv("install_page_fault_hook: returning OK without patching\n");
+	trace_drv("install_page_fault_hook: returning OK without patching");
 	return 0;
 }
 
