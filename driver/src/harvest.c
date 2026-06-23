@@ -57,15 +57,15 @@ static inline struct wz_hero_slot *wz_slots(void) {
 	return (struct wz_hero_slot *)drv.wz_hero_addr_map;
 }
 
-static void(*orig_do_page_fault)(unsigned long addr, unsigned int esr, struct pt_regs *regs);
+static int(*orig_do_page_fault)(unsigned long far, unsigned long esr, struct pt_regs *regs);
 
 static bool kernel_hook_is_hooked;
 static bool arm64_force_sig_fault_kp_is_registered;
 
 static hook_t do_page_fault_hook;
 
-static noinline __nocfi void drv_call_do_page_fault(void (*fn)(unsigned long addr, unsigned int esr, struct pt_regs *regs), unsigned long addr, unsigned int esr, struct pt_regs *regs) {
-	fn(addr, esr, regs);
+static noinline __nocfi int drv_call_do_page_fault(int (*fn)(unsigned long far, unsigned long esr, struct pt_regs *regs), unsigned long far, unsigned long esr, struct pt_regs *regs) {
+	return fn(far, esr, regs);
 }
 
 static struct kprobe arm64_force_sig_fault_kp = {
@@ -126,10 +126,16 @@ static bool harvest_match_current_pkg(void) {
 	return strncmp(task->comm, KCFG_TARGET_PACKAGE, TASK_COMM_LEN) == 0;
 }
 
-void my_do_page_fault(unsigned long addr, unsigned int esr, struct pt_regs *regs) {
-	void(*tail)(unsigned long, unsigned int, struct pt_regs *);
+int my_do_page_fault(unsigned long far, unsigned long esr, struct pt_regs *regs) {
+	int (*tail)(unsigned long, unsigned long, struct pt_regs *);
 	u8 *guard;
-	int seq;
+	int seq = 0;
+	int rc;
+
+	/* preempt_disable bracket so this_cpu_ptr / raw_smp_processor_id stay
+	 * sensible under DEBUG_PREEMPT-enabled userdebug GKI builds. The whole
+	 * body is tiny and non-sleeping, so preempt-off cost is negligible. */
+	preempt_disable();
 
 	guard = this_cpu_ptr(&harvest_in_progress);
 
@@ -142,10 +148,10 @@ void my_do_page_fault(unsigned long addr, unsigned int esr, struct pt_regs *regs
 
 	seq = atomic_inc_return(&mdpf_log_count);
 	if (seq <= MDPF_LOG_CAP)
-		printk(KERN_EMERG "[memory-driver] mdpf #%d pid=%d comm=%.16s addr=%lx esr=%x cpu=%d\n",
+		printk(KERN_EMERG "[memory-driver] mdpf #%d pid=%d comm=%.16s far=%lx esr=%lx cpu=%d\n",
 		       seq, current ? current->pid : -1,
 		       current ? current->comm : "(null)",
-		       addr, esr, smp_processor_id());
+		       far, esr, raw_smp_processor_id());
 
 	if (!regs)
 		goto tail_call_clear;
@@ -153,8 +159,9 @@ void my_do_page_fault(unsigned long addr, unsigned int esr, struct pt_regs *regs
 	if (!harvest_match_current_pkg())
 		goto tail_call_clear;
 
-	/* regs[30] (X30/LR slot @ +0xF0) carries ESR-like fault status in this trampoline frame. */
-	if ((((u64 *)regs)[30] & ESR_DFSC_MASK) != ESR_DFSC_HARVEST_VAL)
+	/* Use the real ESR parameter — the previous read of `((u64 *)regs)[30]`
+	 * was a misnamed pt_regs->pc slot, not the ESR. */
+	if ((esr & ESR_DFSC_MASK) != ESR_DFSC_HARVEST_VAL)
 		goto tail_call_clear;
 
 	{
@@ -175,20 +182,22 @@ tail_call_clear:
 	*guard = 0;
 tail_call:
 	tail = orig_do_page_fault;
-	if (!tail)
-		return;
+	if (!tail) {
+		preempt_enable();
+		return 0;  /* claim handled — original is unavailable */
+	}
 
-	/* CAPPED EMERG: log THE LAST INSTRUCTION before we branch through the
-	 * relocated prologue.  If the next kmsg line in a crash dump is not
-	 * "mdpf returned" — we know the crash is inside relo_buf. */
-	if (seq <= MDPF_LOG_CAP)
+	if (seq && seq <= MDPF_LOG_CAP)
 		printk(KERN_EMERG "[memory-driver] mdpf #%d about-to-tail tail=%px\n", seq, tail);
 
 	/* Trampoline buffer has no KCFI type-id prefix word; route the indirect call through a __nocfi wrapper so CONFIG_CFI_CLANG does not trap on the relocated prologue. */
-	drv_call_do_page_fault(tail, addr, esr, regs);
+	rc = drv_call_do_page_fault(tail, far, esr, regs);
 
-	if (seq <= MDPF_LOG_CAP)
-		printk(KERN_EMERG "[memory-driver] mdpf #%d returned from tail\n", seq);
+	if (seq && seq <= MDPF_LOG_CAP)
+		printk(KERN_EMERG "[memory-driver] mdpf #%d returned from tail rc=%d\n", seq, rc);
+
+	preempt_enable();
+	return rc;
 }
 
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {
