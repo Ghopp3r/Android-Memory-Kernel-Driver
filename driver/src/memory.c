@@ -448,6 +448,7 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 		return -EFAULT;
 	}
 
+	pr_drv("multi_read: count=%u descs=%px\n", count, descs);
 	mmap_read_lock(target_mm);
 	for (i = 0; i < count; i++) {
 		u64 src_va = staging[i].src_va;
@@ -455,26 +456,35 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 		size_t len = staging[i].len;
 		size_t remain = len;
 
+		pr_drv("multi_read[%u]: src_va=%llx user_dst=%llx len=%zu\n",
+		       i, (unsigned long long)src_va,
+		       (unsigned long long)user_dst, len);
+
 		if (!len)
 			continue;
 
 		while (remain) {
 			u64 phys, lm_va;
 			size_t chunk = min_t(size_t, remain, 4096 - (size_t)(src_va & 0xFFF));
+			int v_rc;
+			unsigned long not_copied;
 
-			if (vaddr_to_phys(target_mm, src_va, &phys) != 0)
+			v_rc = vaddr_to_phys(target_mm, src_va, &phys);
+			if (v_rc != 0) {
+				pr_drv("multi_read[%u]: vaddr_to_phys(%llx) rc=%d skip\n",
+				       i, (unsigned long long)src_va, v_rc);
 				goto next;
+			}
 
-			/* Linear-map alias of the source page (same primitive
-			 * read_process_memory_linear uses). The previous vmap+pfn_valid
-			 * path silently returned empty buffers when pfn_valid() rejected
-			 * anonymous user pages on vendor kernels — drv_probe's MULTI_READ
-			 * caught it: rc=0, size_back=1, but dst stayed zero. */
 			lm_va = drv_lm_va_from_phys(phys);
+			pr_drv("multi_read[%u]: phys=%llx lm_va=%llx chunk=%zu\n",
+			       i, (unsigned long long)phys, (unsigned long long)lm_va, chunk);
 
-			(void)copy_to_user((void __user *)(uintptr_t)user_dst,
-			                   (const void *)(uintptr_t)lm_va + (src_va & 0xFFF),
-			                   chunk);
+			not_copied = copy_to_user((void __user *)(uintptr_t)user_dst,
+			                          (const void *)(uintptr_t)lm_va + (src_va & 0xFFF),
+			                          chunk);
+			if (not_copied)
+				pr_drv("multi_read[%u]: copy_to_user not_copied=%lu\n", i, not_copied);
 next:
 			remain -= chunk;
 			src_va += chunk;
