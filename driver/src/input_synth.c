@@ -17,6 +17,7 @@
 #include <driver/types.h>
 #include <driver/uapi.h>
 
+#include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
 #include <linux/cfi.h>
 #endif

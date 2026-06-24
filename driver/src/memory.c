@@ -14,6 +14,7 @@
 #endif
 #include <linux/mempolicy.h>
 #include <linux/mm.h>
+#include <linux/mm_inline.h>
 #include <linux/mm_types.h>
 #include <linux/mmap_lock.h>
 #include <linux/mmzone.h>
@@ -789,12 +790,14 @@ u64 process_get_tls(struct task_struct *task) {
  * offsets (vma+344 for the name, vma+2008/+2016 for a cookie u64) walked
  * past the end of struct vm_area_struct into adjacent slab objects and
  * were UB on every kernel — replaced with the kernel's anon_vma_name() API
- * (available since 5.17) and vma->vm_start (stable on every KMI).
+ * (CONFIG_ANON_VMA_NAME, available since 5.17) and vma->vm_start (stable on
+ * every KMI).
  *
- * On kernels older than 5.17 the anon name feature does not exist, so we
- * return 0 (no match). The needle is bounded at ANON_VMA_NAME_MAX_LEN. */
+ * On kernels older than 5.17 OR where CONFIG_ANON_VMA_NAME is disabled
+ * (default off on GKI Android 15 / 6.6), the feature is unavailable and
+ * we return 0 (no match). */
 u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0) && IS_ENABLED(CONFIG_ANON_VMA_NAME)
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	u64 cookie = 0;
