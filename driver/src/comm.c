@@ -80,7 +80,9 @@ int comm_warm_symbols(void) {
 }
 
 static int drv_close_fd(unsigned int fd) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+	/* close_fd(unsigned) appeared in 5.11 (commit 8760c909f54e); pre-5.11
+	 * vendor forks still expose __close_fd(struct files_struct *, unsigned). */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 	return close_fd(fd);
 #else
 	return __close_fd(current->files, fd);
@@ -89,6 +91,16 @@ static int drv_close_fd(unsigned int fd) {
 
 /* Sanity cap on attacker-controlled req.size for the bulk memory cmd transfers. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Bounding the per-ioctl byte count also caps the mmap_read_lock hold time on the target. */
 #define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
+
+/* Plausibility check for a pointer pulled out of a downstream vendor struct
+ * via a hard-coded offset. NULL passes (an empty rbtree holder is valid).
+ * Non-NULL must have bit 63 set (ARM64 kernel VAs) AND be pointer-aligned.
+ * Used to bail out before dereferencing stale KGSL holder offsets — see
+ * DRV_CMD_HIDE_KGSL case in dispatch. */
+static inline bool drv_looks_like_kptr_or_null(const void *p) {
+	uintptr_t v = (uintptr_t)p;
+	return v == 0 || (((v >> 63) & 1u) && IS_ALIGNED(v, sizeof(void *)));
+}
 
 /* .owner=THIS_MODULE pins module text for as long as any client holds the fd. */
 const struct file_operations inofile_fops = {
@@ -102,14 +114,6 @@ struct kprobe reboot_kp = {
 	.pre_handler = reboot_handler_pre,
 };
 
-static int drv_copy_kernel_nofault_compat(void *dst, const void *src, size_t size) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	return copy_from_kernel_nofault(dst, src, size);
-#else
-	return probe_kernel_read(dst, src, size);
-#endif
-}
-
 static bool drv_read_wrapped_syscall_args(struct pt_regs *regs, unsigned long args[4]) {
 	unsigned long pt_regs_ptr;
 
@@ -120,7 +124,10 @@ static bool drv_read_wrapped_syscall_args(struct pt_regs *regs, unsigned long ar
 	if (!pt_regs_ptr)
 		return false;
 
-	return drv_copy_kernel_nofault_compat(args, (const void *)(uintptr_t)pt_regs_ptr, sizeof(unsigned long) * 4) == 0;
+	/* copy_from_kernel_nofault is the canonical safe kernel-VA reader since
+	 * 5.8 (commit fe557319aa06). Driver matrix floor is 5.10, so this is
+	 * always available — no compat shim needed. */
+	return copy_from_kernel_nofault(args, (const void *)(uintptr_t)pt_regs_ptr, sizeof(unsigned long) * 4) == 0;
 }
 
 static void drv_queue_fd_install(void __user *reply, const char *source) {
@@ -382,11 +389,29 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		void *holder_a;
 		void *holder_b;
 
+		/* Downstream KGSL struct (out-of-tree Qualcomm module) has no public
+		 * header; offsets 0x440 / 0x448 are reverse-engineered from one
+		 * vendor BSP and are NOT stable across MSM / msm-5.x / SM8550-class
+		 * builds. Sanity-check the dereferenced pointers look like kernel
+		 * addresses (top bit set, pointer-aligned) before walking them as
+		 * rb_root holders; otherwise the rb_first/rb_next traversal will
+		 * oops on whatever stats counter happens to live at that offset.
+		 *
+		 * Long-term fix: BTF-driven offset discovery (/sys/kernel/btf/kgsl)
+		 * — confirmed available on the device-tested leg. Tracked as a
+		 * follow-up feature; this hardening turns "kernel oops" into
+		 * "ioctl returns -ENOTSUPP" in the meantime. */
+		result = (u64)(s64)-EOPNOTSUPP;
 		if (!kgsl)
 			break;
-		/* rbtree holder pointers at kgsl_driver+0x448 / +0x440 */
 		holder_a = *(void **)((u8 *)kgsl + 0x448);
 		holder_b = *(void **)((u8 *)kgsl + 0x440);
+		if (!drv_looks_like_kptr_or_null(holder_a) ||
+		    !drv_looks_like_kptr_or_null(holder_b)) {
+			pr_drv_warn("DRV_CMD_HIDE_KGSL: holder offsets stale on this build (a=%p b=%p); refusing\n",
+				    holder_a, holder_b);
+			break;
+		}
 		hide_kgsl(holder_a, (int)req.pid);
 		hide_kgsl2(holder_b, (int)req.pid);
 		result = 0;

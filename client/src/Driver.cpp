@@ -161,7 +161,11 @@ bool CDriver::hideKgsl() {
     std::snprintf(pidStr, sizeof(pidStr), "%d", static_cast<int>(m_targetPid));
     drv_ioctl_req req = makeReq(0);
     req.addr = reinterpret_cast<uint64_t>(pidStr);
-    return doIoctl(DRV_CMD_HIDE_KGSL, &req) >= 0;
+    if (doIoctl(DRV_CMD_HIDE_KGSL, &req) < 0)
+        return false;
+    // Driver writes -EOPNOTSUPP cast to u64 into req.size when KGSL holder
+    // offsets fail the kernel-pointer sanity check on the current build.
+    return static_cast<int64_t>(req.size) >= 0;
 }
 
 std::vector<uint64_t> CDriver::multiRead(const std::vector<uint64_t>& addrs) {

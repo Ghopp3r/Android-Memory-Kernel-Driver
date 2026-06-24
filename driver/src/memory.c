@@ -55,11 +55,11 @@
 #include "memory.h"
 #include "uaccess_target.h"
 
-/* ARM64 pagewalk arithmetic constants — invariant across the supported kernel range. PAGE_OFFSET is intentionally NOT hardcoded; phys_to_virt() honours vabits_actual. The binary's `(pa - memstart) | 0xFFFFFF80_00000000` was specific to a VA_BITS=40 layout and walks garbage on standard 39-bit GKI 6.6 builds (which is exactly the failure mode in pstore: write_ro_memory's PTE flip lands on the wrong leaf and the subsequent byte-store faults on the still-RO target). */
-#define DRV_PTE_OA_MASK 0x0000007FFFFFF000ULL
-#define DRV_PTE_PA_MASK 0x0000FFFFFFFFF000ULL
-/* 512 GiB user-space limit on this kernel. */
-#define DRV_TASK_SIZE_64 0x0000008000000000ULL
+/* ARM64 pagewalk arithmetic. PA extraction uses the kernel's own primitives
+ * (__pte_to_phys, PHYS_MASK) so the driver is correct across
+ * CONFIG_ARM64_PA_BITS_48 (GKI default) and CONFIG_ARM64_PA_BITS_52 (LPA2)
+ * without per-version literals. PAGE_OFFSET is intentionally NOT hardcoded;
+ * phys_to_virt() honours vabits_actual. */
 /* Strip ARMv8 TBI / PAC byte from a user VA before handing to uaccess. */
 #define DRV_TBI_PAC_STRIP_MASK 0xFF7FFFFFFFFFFFFFULL
 /* write_ro_memory PTE bit-flip: clear PTE_RDONLY(bit 7), set PTE_DBM(bit 51). */
@@ -154,7 +154,8 @@ static void drv_flush_dcache_range(u64 va, size_t len, u32 *cache_slot) {
 }
 
 static inline u64 drv_lm_va_from_phys(u64 phys) {
-	return (u64)(uintptr_t)phys_to_virt(phys & DRV_PTE_OA_MASK);
+	/* Page-align; phys_to_virt() handles vabits_actual + CONFIG_ARM64_PA_BITS internally. */
+	return (u64)(uintptr_t)phys_to_virt(phys & PAGE_MASK);
 }
 
 static bool drv_section_online(u64 page_pa) {
@@ -230,7 +231,7 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	if (!phys)
 		return -EFAULT;
 
-	if (!drv_section_online(phys & DRV_PTE_PA_MASK))
+	if (!drv_section_online(phys & PHYS_MASK & PAGE_MASK))
 		return -EFAULT;
 
 	*out_phys = phys;
@@ -526,8 +527,11 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 		u64 i;
 
 		if (level_count == 0 || level_count > 4) {
-			result += chunk;
-			continue;
+			/* mm_globals_init() refuses to load on unsupported levels
+			 * (see init_driver() in lifecycle.c), so this is defence in
+			 * depth — abort the whole patch rather than silently skip. */
+			pr_drv_err("write_ro_memory_pte_flip: unexpected page level %u; aborting\n", level_count);
+			return result;
 		}
 
 		/* shift = 39 - 9*(4 - m_page_level); for m_page_level=3 that's 39, 30, 21, 12. */
@@ -556,7 +560,10 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 						break;
 					next_pa = e & (~(-1LL << mask_width) << shift);
 				} else if ((e & 3) == 3) {
-					next_pa = e & DRV_PTE_OA_MASK;
+					/* Table descriptor — OA encoding is identical to a PTE
+					 * leaf, so reuse the kernel's own PA extractor. Correct
+					 * across PA_BITS_48/52 unlike a hand-rolled bit mask. */
+					next_pa = (u64)__pte_to_phys(__pte(e));
 				} else {
 					leaf = NULL;
 					break;
@@ -776,18 +783,27 @@ u64 process_get_tls(struct task_struct *task) {
 	return (u64)task->thread.uw.tp_value;
 }
 
-/* The two raw byte offsets here (344 for anon-vma-name, 2008/2016 for the per-VMA driver-private cookie) are NOT standard struct vm_area_struct fields — the original .ko reads driver-private slots appended past the end of the kernel vma. Kept as inline literals with names; do not promote back into compat.h. */
+/* DRV_CMD_READ_VMA_COOKIE walks the target's VMA tree, matches anon_vma_name
+ * against the userspace-supplied needle, and returns the matching VMA's
+ * start address as the canonical 64-bit cookie. The original .ko's raw
+ * offsets (vma+344 for the name, vma+2008/+2016 for a cookie u64) walked
+ * past the end of struct vm_area_struct into adjacent slab objects and
+ * were UB on every kernel — replaced with the kernel's anon_vma_name() API
+ * (available since 5.17) and vma->vm_start (stable on every KMI).
+ *
+ * On kernels older than 5.17 the anon name feature does not exist, so we
+ * return 0 (no match). The needle is bounded at ANON_VMA_NAME_MAX_LEN. */
 u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	u64 cookie = 0;
-	unsigned long cookie_off;
+	size_t nlen;
 
-	if (!task || !needle)
+	if (!task || !needle || !*needle)
 		return 0;
 
-	/* 32-bit (AArch32 compat) target tasks shift the driver-appended vma layout by 8 bytes — select via TIF_32BIT on the owning task. */
-	cookie_off = test_tsk_thread_flag(task, TIF_32BIT) ? 2016UL : 2008UL;
+	nlen = strnlen(needle, 80);
 
 	mm = get_task_mm(task);
 	if (!mm)
@@ -802,9 +818,9 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 #else
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 #endif
-		const char *aname = (const char *)((char *)vma + 344);
-		if (strncmp(aname, needle, 16) == 0) {
-			cookie = *(u64 *)((char *)vma + cookie_off);
+		struct anon_vma_name *avn = anon_vma_name(vma);
+		if (avn && strncmp(avn->name, needle, nlen) == 0 && avn->name[nlen] == '\0') {
+			cookie = (u64)vma->vm_start;
 			break;
 		}
 	}
@@ -815,6 +831,11 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 	mmap_read_unlock(mm);
 	mmput(mm);
 	return cookie;
+#else
+	(void)task;
+	(void)needle;
+	return 0;
+#endif
 }
 
 /* TTBR0-swap uaccess helpers live in uaccess_target.c (copy_to_target_user/copy_from_target_user). Use them for cross-mm copies; for copies against `current`'s userspace, fall back to the kernel-provided copy_to_user / copy_from_user. */
