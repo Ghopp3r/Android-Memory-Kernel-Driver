@@ -335,6 +335,12 @@ static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs)
 	return handler_pre(self, regs);
 }
 
+/* Second invocation on the same (inode, offset) blocks indefinitely inside
+ * uprobe_register on Android 6.6 kernels — the global consumer is already on
+ * the per-uprobe list and the re-add path waits on a lock the first caller
+ * still holds. Gate on first-success to keep userspace re-bind safe. */
+static bool uprobe_armed;
+
 int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 	struct path path;
 	struct dentry *dentry;
@@ -343,6 +349,9 @@ int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 
 	/* Stash the user-chosen layout selector in the module global. */
 	event_type = new_event_type;
+
+	if (uprobe_armed)
+		return 0;
 
 	path.mnt = NULL;
 	path.dentry = NULL;
@@ -373,6 +382,8 @@ int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 	ret = drv_uprobe_register(inode, probe_offset, &uc);
 	if (ret != 0)
 		pr_drv_err("uprobe_register failed: %d\n", ret);
+	else
+		uprobe_armed = true;
 
 	path_put(&path);
 	return ret;
