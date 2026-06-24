@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
+//
+// Demo client for my-driver.ko. Exercises every sub-API of CDriver:
+//   driver.memory.{read,write,readVmap,writeVmap,getModuleBase,getTls,...}
+//   driver.touch.{down,move,up}
+//   driver.gyro.{bind,bindAuto,write,isArmed}
+//   driver.{open,installHooks,tearDown,setTarget,findTaskByComm,...}
+//
+// Drop-in pattern for new projects: copy Driver.{h,cpp} + SensorResolve.h,
+// adapt the per-frame logic. No app-specific code here.
+
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
@@ -14,65 +24,47 @@
 
 #include "Driver.h"
 
-#ifndef HACK_CLIENT_TARGET_PACKAGE
-#define HACK_CLIENT_TARGET_PACKAGE "com.example.game"
-#endif
-
-#ifndef HACK_CLIENT_TARGET_MODULE
-#define HACK_CLIENT_TARGET_MODULE "libUE4.so"
-#endif
+constexpr const char* kDefaultPackage = "com.example.game";
+constexpr const char* kDefaultModule  = "libUE4.so";
 
 static std::string prompt(const char* label) {
     std::printf("%s", label);
     std::fflush(stdout);
     char buf[256] = {0};
-    if (!std::fgets(buf, sizeof(buf), stdin))
-        return {};
+    if (!std::fgets(buf, sizeof(buf), stdin)) return {};
     size_t n = std::strlen(buf);
     while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' '))
         buf[--n] = 0;
     return std::string(buf);
 }
 
+static bool promptYesNo(const char* label) {
+    std::string a = prompt(label);
+    return a == "y" || a == "Y" || a == "yes" || a == "YES";
+}
+
 static bool isAllDigits(const std::string& s) {
-    if (s.empty())
-        return false;
+    if (s.empty()) return false;
     for (char c : s)
-        if (!std::isdigit(static_cast<unsigned char>(c)))
-            return false;
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
     return true;
 }
 
-static bool promptYesNo(const char* label) {
-    std::string answer = prompt(label);
-    return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES";
-}
-
-static std::optional<pid_t> resolvePackageToPid(const std::string& pkg) {
+static std::optional<pid_t> GetPid(const std::string& pkg) {
     DIR* d = ::opendir("/proc");
-    if (!d)
-        return std::nullopt;
-
+    if (!d) return std::nullopt;
     std::optional<pid_t> found;
     while (dirent* e = ::readdir(d)) {
-        const char* n = e->d_name;
-        if (n[0] < '0' || n[0] > '9')
-            continue;
-
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
         char path[64];
-        std::snprintf(path, sizeof(path), "/proc/%s/cmdline", n);
+        std::snprintf(path, sizeof(path), "/proc/%s/cmdline", e->d_name);
         int fd = ::open(path, O_RDONLY);
-        if (fd < 0)
-            continue;
-
+        if (fd < 0) continue;
         char buf[256] = {0};
         ssize_t r = ::read(fd, buf, sizeof(buf) - 1);
         ::close(fd);
-        if (r <= 0)
-            continue;
-
-        if (std::strncmp(buf, pkg.c_str(), pkg.size()) == 0) {
-            found = static_cast<pid_t>(std::atoi(n));
+        if (r > 0 && std::strncmp(buf, pkg.c_str(), pkg.size()) == 0) {
+            found = static_cast<pid_t>(std::atoi(e->d_name));
             break;
         }
     }
@@ -82,119 +74,80 @@ static std::optional<pid_t> resolvePackageToPid(const std::string& pkg) {
 
 static void hexDump16(uint64_t addr, const uint8_t* buf) {
     std::printf("0x%016llx: ", static_cast<unsigned long long>(addr));
-    for (int i = 0; i < 16; ++i)
-        std::printf("%02x ", buf[i]);
+    for (int i = 0; i < 16; ++i) std::printf("%02x ", buf[i]);
     std::printf("\n");
-}
-
-static std::optional<uint64_t> parseAddress(const std::string& s) {
-    if (s.empty())
-        return std::nullopt;
-
-    const char* begin = s.c_str();
-    while (*begin == ' ' || *begin == '\t')
-        ++begin;
-    if (*begin == '\0')
-        return std::nullopt;
-
-    errno = 0;
-    char* end = nullptr;
-    unsigned long long value = std::strtoull(begin, &end, 0);
-    if (errno != 0 || end == begin)
-        return std::nullopt;
-    while (*end == ' ' || *end == '\t')
-        ++end;
-    if (*end != '\0' || value == 0)
-        return std::nullopt;
-    return static_cast<uint64_t>(value);
 }
 
 int main() {
     if (!driver.open()) {
-        std::fprintf(stderr, "Driver open: failed, errno=%d (%s)\n", errno, std::strerror(errno));
-        std::fprintf(stderr, "Check dmesg for \"fd installed\" after running the client.\n");
+        std::fprintf(stderr, "driver.open failed: errno=%d (%s)\n", errno, std::strerror(errno));
         return 3;
     }
-    std::printf("Driver open: ok\n");
+    std::printf("driver.open: ok\n");
 
     if (promptYesNo("Install hooks? [y/N]: ")) {
-        if (driver.installHooks())
-            std::printf("InstallHooks: ok\n");
-        else
-            std::printf("InstallHooks: failed\n");
-    } else {
-        std::printf("InstallHooks: skipped\n");
+        std::printf("installHooks: %s\n", driver.installHooks() ? "ok" : "failed");
     }
 
-    std::string targetPrompt = std::string("Target (pid or package, default ") + HACK_CLIENT_TARGET_PACKAGE + "): ";
-    std::string targetInput = prompt(targetPrompt.c_str());
-    if (targetInput.empty())
-        targetInput = HACK_CLIENT_TARGET_PACKAGE;
+    if (promptYesNo("Auto-bind gyro uprobe? [y/N]: ")) {
+        if (driver.gyro.bindAuto())
+            std::printf("gyro.bindAuto: armed\n");
+        else
+            std::printf("gyro.bindAuto: no candidate symbol in libsensorservice.so\n");
+    }
 
+    std::string targetInput = prompt(("Target (pid or package, default " + std::string(kDefaultPackage) + "): ").c_str());
+    if (targetInput.empty()) targetInput = kDefaultPackage;
     pid_t pid = 0;
     if (isAllDigits(targetInput)) {
         pid = static_cast<pid_t>(std::atoi(targetInput.c_str()));
-    } else if (auto found = resolvePackageToPid(targetInput)) {
+    } else if (auto found = GetPid(targetInput)) {
         pid = *found;
-        std::printf("Package: %s, Pid: %d\n", targetInput.c_str(), static_cast<int>(pid));
+        std::printf("package: %s -> pid: %d\n", targetInput.c_str(), static_cast<int>(pid));
     } else {
-        std::fprintf(stderr, "Target not found: %s\n", targetInput.c_str());
+        std::fprintf(stderr, "target not found: %s\n", targetInput.c_str());
         return 1;
     }
     driver.setTarget(pid);
 
-    std::string modulePrompt = std::string("Module (default ") + HACK_CLIENT_TARGET_MODULE + "): ";
-    std::string moduleName = prompt(modulePrompt.c_str());
-    if (moduleName.empty())
-        moduleName = HACK_CLIENT_TARGET_MODULE;
+    std::string moduleName = prompt(("Module (default " + std::string(kDefaultModule) + "): ").c_str());
+    if (moduleName.empty()) moduleName = kDefaultModule;
 
-    auto base = driver.getModuleBase(moduleName);
+    auto base = driver.memory.getModuleBase(moduleName);
     if (!base) {
-        std::fprintf(stderr, "Module: %s, Status: not found\n", moduleName.c_str());
-        std::string baseInput = prompt("Module base (hex, empty to exit): ");
-        base = parseAddress(baseInput);
-        if (!base) {
-            std::fprintf(stderr, "Module base not provided\n");
-            return 2;
-        }
-        std::printf("Module: %s, ManualBase: 0x%llx\n", moduleName.c_str(), static_cast<unsigned long long>(*base));
+        std::fprintf(stderr, "memory.getModuleBase: %s not found\n", moduleName.c_str());
+        return 2;
+    }
+    std::printf("memory.getModuleBase: 0x%llx\n", static_cast<unsigned long long>(*base));
+
+    uint8_t first[16] = {0};
+    if (driver.memory.read(*base, first, sizeof(first))) {
+        std::printf("memory.read 16B: ok\n");
+        hexDump16(*base, first);
     } else {
-        std::printf("Module: %s, Base: 0x%llx\n", moduleName.c_str(), static_cast<unsigned long long>(*base));
+        std::printf("memory.read: failed at 0x%llx\n", static_cast<unsigned long long>(*base));
     }
 
-    uint8_t firstBytes[16] = {0};
-    if (driver.readBytes(*base, firstBytes, sizeof(firstBytes))) {
-        std::printf("Read16: ok\n");
-        hexDump16(*base, firstBytes);
-    } else {
-        std::printf("Read16: failed at 0x%llx\n", static_cast<unsigned long long>(*base));
+    if (auto tls = driver.memory.getTls())
+        std::printf("memory.getTls: 0x%llx\n", static_cast<unsigned long long>(*tls));
+    else
+        std::printf("memory.getTls: unavailable\n");
+
+    if (auto magic = driver.memory.read<uint32_t>(*base))
+        std::printf("memory.read<u32> (ELF magic): 0x%08x\n", *magic);
+
+    if (promptYesNo("Inject test touch at (100,100)? [y/N]: ")) {
+        bool ok = driver.touch.down(0, 100, 100) && driver.touch.up(0);
+        std::printf("touch.down + touch.up: %s\n", ok ? "ok" : "failed");
     }
 
-    if (auto tls = driver.getTls()) {
-        std::printf("Tls: 0x%llx\n", static_cast<unsigned long long>(*tls));
-    } else {
-        std::printf("Tls: unavailable\n");
+    if (driver.gyro.isArmed() && promptYesNo("Inject 0.5 rad/s gyro spoof for 2s? [y/N]: ")) {
+        driver.gyro.write(0.5f, 0.0f, true);
+        ::sleep(2);
+        driver.gyro.write(0.0f, 0.0f, false);
+        std::printf("gyro.write: cycled\n");
     }
 
-    if (auto magic = driver.read<uint32_t>(*base)) {
-        std::printf("ElfMagic: 0x%08x\n", *magic);
-    } else {
-        std::printf("ElfMagic: read failed\n");
-    }
-
-    if (promptYesNo("Inject test touch? [y/N]: ")) {
-        bool touchDownOk = driver.touchDown(0, 100, 100);
-        bool touchUpOk = touchDownOk && driver.touchUp(0);
-        if (touchDownOk && touchUpOk) {
-            std::printf("Touch: ok, Slot: 0, At: (100,100)\n");
-        } else {
-            std::printf("Touch: failed, Down: %s, Up: %s\n", touchDownOk ? "ok" : "failed", touchUpOk ? "ok" : "skipped");
-        }
-    } else {
-        std::printf("Touch: skipped\n");
-    }
-
-    std::printf("Done\n");
-
+    std::printf("done\n");
     return 0;
 }

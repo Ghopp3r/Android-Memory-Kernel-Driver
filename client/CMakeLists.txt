@@ -42,18 +42,6 @@ endif()
 message(STATUS "Building for Android (ABI=${ANDROID_ABI}, platform=${ANDROID_PLATFORM})")
 
 # ---------------------------------------------------------------------------
-# Configurable demo defaults
-# ---------------------------------------------------------------------------
-#
-# The Android package and module the demo client offers by default when the
-# interactive prompts are left empty. Override these at configure time.
-#
-set(TARGET_PACKAGE "com.test.app"
-    CACHE STRING "Default target package the client will look for")
-set(TARGET_MODULE "libexample.so"
-    CACHE STRING "Default module name the client will resolve")
-
-# ---------------------------------------------------------------------------
 # Target
 # ---------------------------------------------------------------------------
 add_executable(my-driver-client
@@ -64,11 +52,6 @@ target_include_directories(my-driver-client
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../driver/include)
-
-target_compile_definitions(my-driver-client
-    PRIVATE
-        HACK_CLIENT_TARGET_PACKAGE="${TARGET_PACKAGE}"
-        HACK_CLIENT_TARGET_MODULE="${TARGET_MODULE}")
 
 target_compile_options(my-driver-client
     PRIVATE
