@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-# CI: build my-driver.ko against every supported Android KMI.
+# CI: build my-driver.ko against every supported Android KMI and compile the
+# Android arm64 client, probe, and benchmark against the shared UAPI.
 #
 # Each matrix entry runs inside the matching ghcr.io/ylarod/ddk image, which
 # ships a pre-extracted kernel tree at $KERNEL_SRC. The Makefile picks that
 # up automatically (no flags required).
 #
-# Artefact naming: my-driver-<kmi>.ko (one upload per matrix leg).
+# Artefact naming: my-driver-<kmi>.ko (one upload per matrix leg) plus a
+# userspace-arm64-v8a bundle.
 
 name: build
 
@@ -26,6 +28,54 @@ on:
         type: string
 
 jobs:
+  userspace:
+    name: build userspace arm64-v8a
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Android NDK environment
+        run: |
+          set -eux
+          test -n "${ANDROID_NDK_HOME}"
+          test -f "${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          cmake --version
+
+      - name: Build C++ client
+        run: |
+          set -eux
+          cmake -S client -B out/client \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-30 \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/client -j"$(nproc)"
+
+      - name: Build probe and benchmark
+        run: |
+          set -eux
+          cmake -S scripts -B out/scripts \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-30 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/scripts -j"$(nproc)"
+
+      - name: Upload userspace tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: userspace-arm64-v8a
+          path: |
+            out/client/my-driver-client
+            out/scripts/drv_probe
+            out/scripts/drv_bench
+          if-no-files-found: error
+          retention-days: 30
+
   build:
     name: build ${{ matrix.kmi }}
     runs-on: ubuntu-latest

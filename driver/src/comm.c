@@ -444,6 +444,34 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 	return 0;
 }
 
+static long do_find_pid_by_package(void __user *arg) {
+	struct drv_find_pid_req req;
+	size_t package_len;
+	pid_t pid;
+	int rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.flags != 0)
+		return -EINVAL;
+
+	package_len = strnlen(req.package, sizeof(req.package));
+	if (!package_len)
+		return -EINVAL;
+	if (package_len == sizeof(req.package))
+		return -ENAMETOOLONG;
+
+	rc = process_find_pid_by_package(req.package, &pid);
+	if (rc)
+		return rc;
+
+	req.pid = pid;
+	if (copy_to_user(arg, &req, sizeof(req)) != 0)
+		return -EFAULT;
+
+	return 0;
+}
+
 static long do_hook_cmd(unsigned int cmd, void __user *arg) {
 	switch (cmd) {
 	case DRV_CMD_GAME_ASSET_READ_A:
@@ -533,6 +561,9 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 			return -EFAULT;
 		return 0;
 	}
+
+	if (cmd == DRV_CMD_FIND_PID_BY_PACKAGE)
+		return do_find_pid_by_package(uarg);
 
 	if (cmd >= DRV_CMD_READ_MEM_LINEAR && cmd <= DRV_CMD_DUMP_VMAS)
 		return do_memory_cmd(cmd, uarg);

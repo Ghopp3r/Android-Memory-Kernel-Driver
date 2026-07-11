@@ -30,7 +30,7 @@
 #define DRIVER_IOCTL_PING 0x9FBF1u
 #define DRIVER_IOCTL_HELLO 0x1E240u
 
-/* dispatch_ioctl is a switch keyed by the RAW cmd integer (NOT _IO/_IOR/_IOW/_IOWR macros — the binary uses naked integer compares). Sub-ranges: 0x0B..0x15  memory / process commands 0xD0..0xD5  game-asset / hook-install commands 0x12D..0x18F input-event synthesis commands (lazy-init range) / */
+/* dispatch_ioctl is a switch keyed by the RAW cmd integer (NOT _IO/_IOR/_IOW/_IOWR macros — the binary uses naked integer compares). Sub-ranges: 0x0B..0x16  memory / process commands 0xD0..0xD5  game-asset / hook-install commands 0x12D..0x18F input-event synthesis commands (lazy-init range) / */
 enum drv_cmd {
 	DRV_CMD_READ_MEM_LINEAR         = 0x0B,
 	DRV_CMD_WRITE_MEM_LINEAR        = 0x0C,
@@ -45,6 +45,8 @@ enum drv_cmd {
 	DRV_CMD_HIDE_KGSL               = 0x13,
 	DRV_CMD_MULTI_READ              = 0x14,
 	DRV_CMD_DUMP_VMAS               = 0x15,
+	/* Project extension: exact argv[0] lookup using struct drv_find_pid_req. */
+	DRV_CMD_FIND_PID_BY_PACKAGE     = 0x16,
 
 	DRV_CMD_GAME_ASSET_READ_A       = 0xD0,
 	DRV_CMD_INSTALL_HOOKS           = 0xD1,
@@ -66,6 +68,24 @@ enum drv_cmd {
 	/* Range guards: all cmd values in [FIRST, LAST] enter the lazy-init prelude even if no specific case matches. */
 	DRV_CMD_INPUT_RANGE_FIRST       = 0x12D,
 	DRV_CMD_INPUT_RANGE_LAST        = 0x18F,
+};
+
+/* Fixed, compat-safe payload for DRV_CMD_FIND_PID_BY_PACKAGE.
+ *
+ * Input:
+ *   package = NUL-terminated Android process name (the full argv[0])
+ *   flags   = 0 (reserved for future matching modes)
+ * Output on success:
+ *   pid     = TGID visible in the caller's active PID namespace
+ *
+ * Matching is exact. "com.example.app" does not match
+ * "com.example.app:remote"; pass the latter explicitly to select it.
+ */
+#define DRV_PACKAGE_NAME_MAX 255u
+struct drv_find_pid_req {
+	__s32 pid;
+	__u32 flags;
+	char package[DRV_PACKAGE_NAME_MAX + 1u];
 };
 
 /* 40-byte payload for every cmd in the 0x0B..0x15 range. copy_from_user pulls exactly 0x28 bytes from the userspace arg pointer. Field meaning is command-specific. */

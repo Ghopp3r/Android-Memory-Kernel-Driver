@@ -4,7 +4,7 @@
 //   driver.memory.{read,write,readVmap,writeVmap,getModuleBase,getTls,...}
 //   driver.touch.{down,move,up}
 //   driver.gyro.{bind,bindAuto,write,isArmed}
-//   driver.{open,installHooks,tearDown,setTarget,findTaskByComm,...}
+//   driver.{open,installHooks,tearDown,setTarget,findPidByPackage,...}
 //
 // Drop-in pattern for new projects: copy Driver.{h,cpp} + SensorResolve.h,
 // adapt the per-frame logic. No app-specific code here.
@@ -15,11 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
-#include <fcntl.h>
 #include <optional>
 #include <string>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "Driver.h"
@@ -48,28 +45,6 @@ static bool isAllDigits(const std::string& s) {
     for (char c : s)
         if (!std::isdigit(static_cast<unsigned char>(c))) return false;
     return true;
-}
-
-static std::optional<pid_t> GetPid(const std::string& pkg) {
-    DIR* d = ::opendir("/proc");
-    if (!d) return std::nullopt;
-    std::optional<pid_t> found;
-    while (dirent* e = ::readdir(d)) {
-        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
-        char path[64];
-        std::snprintf(path, sizeof(path), "/proc/%s/cmdline", e->d_name);
-        int fd = ::open(path, O_RDONLY);
-        if (fd < 0) continue;
-        char buf[256] = {0};
-        ssize_t r = ::read(fd, buf, sizeof(buf) - 1);
-        ::close(fd);
-        if (r > 0 && std::strncmp(buf, pkg.c_str(), pkg.size()) == 0) {
-            found = static_cast<pid_t>(std::atoi(e->d_name));
-            break;
-        }
-    }
-    ::closedir(d);
-    return found;
 }
 
 static void hexDump16(uint64_t addr, const uint8_t* buf) {
@@ -101,11 +76,12 @@ int main() {
     pid_t pid = 0;
     if (isAllDigits(targetInput)) {
         pid = static_cast<pid_t>(std::atoi(targetInput.c_str()));
-    } else if (auto found = GetPid(targetInput)) {
+    } else if (auto found = driver.findPidByPackage(targetInput)) {
         pid = *found;
         std::printf("package: %s -> pid: %d\n", targetInput.c_str(), static_cast<int>(pid));
     } else {
-        std::fprintf(stderr, "target not found: %s\n", targetInput.c_str());
+        std::fprintf(stderr, "target not found: %s (errno=%d: %s)\n",
+                     targetInput.c_str(), errno, std::strerror(errno));
         return 1;
     }
     driver.setTarget(pid);

@@ -76,6 +76,24 @@ std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
     return static_cast<pid_t>(req.size);
 }
 
+std::optional<pid_t> CDriver::findPidByPackage(const std::string& package) {
+    if (package.empty() || package.size() > DRV_PACKAGE_NAME_MAX ||
+        package.find('\0') != std::string::npos) {
+        errno = package.size() > DRV_PACKAGE_NAME_MAX ? ENAMETOOLONG : EINVAL;
+        return std::nullopt;
+    }
+
+    drv_find_pid_req req{};
+    std::memcpy(req.package, package.data(), package.size());
+    if (doIoctlRaw(DRV_CMD_FIND_PID_BY_PACKAGE, &req) < 0)
+        return std::nullopt;
+    if (req.pid <= 0) {
+        errno = ESRCH;
+        return std::nullopt;
+    }
+    return static_cast<pid_t>(req.pid);
+}
+
 bool CDriver::Memory::read(uint64_t addr, void* out, size_t len) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);

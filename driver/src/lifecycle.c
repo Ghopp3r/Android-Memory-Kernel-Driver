@@ -92,7 +92,9 @@ int __init init_driver(void) {
 		return ret;
 	}
 
-	/* Resolve the kernel's text patcher (aarch64_insn_patch_text_nosync) BEFORE any hook_install path can run. Non-fatal: write_ro_memory falls back to the legacy bespoke PTE-flip on miss. */
+	/* Resolve the kernel's text patcher and get_cmdline BEFORE any ioctl/hook
+	 * path can use them. Missing symbols are non-fatal: text writes retain the
+	 * legacy fallback and package lookup reports -EOPNOTSUPP. */
 	(void)memory_init();
 
 	ret = comm_warm_symbols();

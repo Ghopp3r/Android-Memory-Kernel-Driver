@@ -18,8 +18,6 @@
 //   drv_bench [--pkg=PKG] [--module=MOD] [--iters=N] [--csv=PATH] [--json=PATH]
 #define _GNU_SOURCE
 
-#include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/prctl.h>
@@ -67,29 +65,25 @@ static bool driver_open(void) {
 }
 
 /* ----------------------- target resolution ----------------------- */
-/* Find first pid whose /proc/<pid>/cmdline starts with `pkg`. */
+/* Resolve the exact Android argv[0] through the kernel driver. */
 static pid_t find_pid_by_pkg(const char *pkg) {
-	DIR *d = opendir("/proc");
-	if (!d) return 0;
-	size_t plen = strlen(pkg);
-	pid_t found = 0;
-	struct dirent *e;
-	while ((e = readdir(d))) {
-		if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
-		char path[64], buf[256] = {0};
-		snprintf(path, sizeof(path), "/proc/%s/cmdline", e->d_name);
-		int fd = open(path, O_RDONLY);
-		if (fd < 0) continue;
-		ssize_t r = read(fd, buf, sizeof(buf) - 1);
-		close(fd);
-		if (r <= 0) continue;
-		if (strncmp(buf, pkg, plen) == 0) {
-			found = (pid_t)atoi(e->d_name);
-			break;
-		}
+	struct drv_find_pid_req req = {0};
+	size_t len;
+
+	if (!pkg) {
+		errno = EINVAL;
+		return 0;
 	}
-	closedir(d);
-	return found;
+	len = strnlen(pkg, DRV_PACKAGE_NAME_MAX + 1u);
+	if (!len || len > DRV_PACKAGE_NAME_MAX) {
+		errno = len ? ENAMETOOLONG : EINVAL;
+		return 0;
+	}
+
+	memcpy(req.package, pkg, len);
+	if (ioctl(g_drv_fd, DRV_CMD_FIND_PID_BY_PACKAGE, &req) < 0)
+		return 0;
+	return req.pid > 0 ? (pid_t)req.pid : 0;
 }
 
 /* Walk /proc/<pid>/maps; return the base address of the first r-x mapping
@@ -230,9 +224,12 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	if (!driver_open()) return 3;
+
 	pid_t pid = find_pid_by_pkg(pkg);
 	if (pid <= 0) {
-		fprintf(stderr, "drv_bench: package '%s' not running\n", pkg);
+		fprintf(stderr, "drv_bench: package '%s' not running (%s)\n",
+		        pkg, strerror(errno));
 		return 1;
 	}
 	uint64_t base = find_module_base(pid, mod);
@@ -240,8 +237,6 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "drv_bench: module '%s' not found in pid %d\n", mod, (int)pid);
 		return 1;
 	}
-	if (!driver_open()) return 3;
-
 	printf("== target: %s pid=%d %s base=0x%lx ==\n",
 	       pkg, (int)pid, mod, (unsigned long)base);
 	printf("== driver fd=%d  iters=%d  csv=%s  json=%s ==\n",

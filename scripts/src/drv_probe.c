@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/prctl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -103,15 +104,22 @@ static bool driver_open(void) {
 	return true;
 }
 
-static int doctl(unsigned int cmd, struct drv_ioctl_req *req, double *latency_ms_out) {
+static int doctl_raw(unsigned int cmd, void *req, double *latency_ms_out) {
 	struct timespec t0, t1;
+	int saved_errno;
 	int rc;
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
 	rc = ioctl(g_fd, cmd, req);
+	saved_errno = errno;
 	clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
 	if (latency_ms_out) *latency_ms_out = ts_diff_ms(t0, t1);
+	errno = saved_errno;
 	return rc;
+}
+
+static int doctl(unsigned int cmd, struct drv_ioctl_req *req, double *latency_ms_out) {
+	return doctl_raw(cmd, req, latency_ms_out);
 }
 
 static struct drv_ioctl_req mkreq(pid_t pid, uint64_t addr, uint64_t buf,
@@ -281,6 +289,100 @@ static void test_find_task_by_comm(struct helper_state *h) {
 	pid_t got = (pid_t)r.size;
 	log_result("FIND_TASK_BY_COMM", rc == 0 && got == h->pid, ms,
 	           "expected=%d got=%d rc=%d", (int)h->pid, (int)got, rc);
+}
+
+static bool wait_for_cmdline(pid_t pid, const char *expected) {
+	char path[64];
+	char buf[DRV_PACKAGE_NAME_MAX + 1u];
+	size_t expected_len = strlen(expected);
+	int attempt;
+
+	snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
+	for (attempt = 0; attempt < 200; attempt++) {
+		int fd = open(path, O_RDONLY);
+		if (fd >= 0) {
+			ssize_t nread;
+			memset(buf, 0, sizeof(buf));
+			nread = read(fd, buf, sizeof(buf) - 1u);
+			close(fd);
+			if (nread > 0 && strnlen(buf, (size_t)nread) == expected_len &&
+			    memcmp(buf, expected, expected_len) == 0)
+				return true;
+		}
+		usleep(10000);
+	}
+	return false;
+}
+
+static void test_find_pid_by_package(void) {
+	char base_package[64];
+	char package[96];
+	struct drv_find_pid_req req;
+	double ms = 0.0;
+	pid_t child;
+	int err;
+	int rc;
+
+	child = fork();
+	if (child < 0) {
+		log_result("FIND_PID_BY_PACKAGE", false, ms, "fork failed: %s", strerror(errno));
+		return;
+	}
+	if (child == 0) {
+		snprintf(base_package, sizeof(base_package),
+		         "com.codex.driverprobe.p%d", (int)getpid());
+		snprintf(package, sizeof(package), "%s:remote", base_package);
+		execl("/proc/self/exe", package, "--pid-package-helper", (char *)NULL);
+		_exit(127);
+	}
+
+	snprintf(base_package, sizeof(base_package),
+	         "com.codex.driverprobe.p%d", (int)child);
+	snprintf(package, sizeof(package), "%s:remote", base_package);
+	if (!wait_for_cmdline(child, package)) {
+		log_result("FIND_PID_BY_PACKAGE", false, ms,
+		           "helper cmdline did not become ready (pid=%d)", (int)child);
+		kill(child, SIGKILL);
+		waitpid(child, NULL, 0);
+		return;
+	}
+
+	memset(&req, 0, sizeof(req));
+	memcpy(req.package, package, strlen(package));
+	errno = 0;
+	rc = doctl_raw(DRV_CMD_FIND_PID_BY_PACKAGE, &req, &ms);
+	err = errno;
+	log_result("FIND_PID_BY_PACKAGE", rc == 0 && req.pid == child, ms,
+	           "expected=%d got=%d rc=%d errno=%d", (int)child,
+	           (int)req.pid, rc, err);
+
+	/* Exact-match contract: the package prefix must not select the helper. */
+	memset(&req, 0, sizeof(req));
+	memcpy(req.package, base_package, strlen(base_package));
+	errno = 0;
+	rc = doctl_raw(DRV_CMD_FIND_PID_BY_PACKAGE, &req, &ms);
+	err = errno;
+	log_result("FIND_PID_PACKAGE_EXACT", rc < 0 && err == ESRCH, ms,
+	           "prefix rc=%d errno=%d (%s)", rc, err, strerror(err));
+
+	memset(&req, 0, sizeof(req));
+	errno = 0;
+	rc = doctl_raw(DRV_CMD_FIND_PID_BY_PACKAGE, &req, &ms);
+	err = errno;
+	log_result("FIND_PID_PACKAGE_EMPTY", rc < 0 && err == EINVAL, ms,
+	           "rc=%d errno=%d (%s)", rc, err, strerror(err));
+
+	memset(&req, 'a', sizeof(req));
+	req.pid = 0;
+	req.flags = 0;
+	errno = 0;
+	rc = doctl_raw(DRV_CMD_FIND_PID_BY_PACKAGE, &req, &ms);
+	err = errno;
+	log_result("FIND_PID_PACKAGE_BOUNDS", rc < 0 && err == ENAMETOOLONG, ms,
+	           "rc=%d errno=%d (%s)", rc, err, strerror(err));
+
+	kill(child, SIGTERM);
+	waitpid(child, NULL, 0);
 }
 
 static void test_get_module_base(struct helper_state *h) {
@@ -544,6 +646,13 @@ static bool wants(const char *select, const char *name) {
 int main(int argc, char **argv) {
 	const char *json_path = NULL, *csv_path = NULL, *select = NULL;
 
+	/* Internal exec target used by test_find_pid_by_package(). argv[0] is a
+	 * unique package-like string, so the expected TGID is unambiguous. */
+	if (argc == 2 && !strcmp(argv[1], "--pid-package-helper")) {
+		for (;;)
+			pause();
+	}
+
 	for (int i = 1; i < argc; ++i) {
 		if (!strncmp(argv[i], "--json=", 7))       json_path = argv[i] + 7;
 		else if (!strncmp(argv[i], "--csv=", 6))   csv_path  = argv[i] + 6;
@@ -582,6 +691,7 @@ int main(int argc, char **argv) {
 
 	if (wants(select, "ping"))         test_ping_hello();
 	if (wants(select, "comm"))         test_find_task_by_comm(&h);
+	if (wants(select, "package"))      test_find_pid_by_package();
 	if (wants(select, "module"))       test_get_module_base(&h);
 	if (wants(select, "tls"))          test_get_tls(&h);
 	if (wants(select, "read_linear"))  test_read_mem(&h, DRV_CMD_READ_MEM_LINEAR, "READ_LINEAR");

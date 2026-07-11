@@ -26,17 +26,20 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_executable(drv_probe src/drv_probe.c)
+add_executable(drv_bench src/drv_bench.c)
 
-target_include_directories(drv_probe
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../driver/include)
+foreach(target drv_probe drv_bench)
+    target_include_directories(${target}
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../driver/include)
 
-target_compile_options(drv_probe
-    PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wno-unused-parameter
-        -Os -ffunction-sections -fdata-sections)
+    target_compile_options(${target}
+        PRIVATE
+            -Wall -Wextra -Wpedantic
+            -Wno-unused-parameter
+            -Os -ffunction-sections -fdata-sections)
 
-target_link_options(drv_probe PRIVATE -Wl,--gc-sections -s)
+    target_link_options(${target} PRIVATE -Wl,--gc-sections -s)
+endforeach()
 
-install(TARGETS drv_probe RUNTIME DESTINATION bin)
+install(TARGETS drv_probe drv_bench RUNTIME DESTINATION bin)

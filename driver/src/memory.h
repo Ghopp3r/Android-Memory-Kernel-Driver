@@ -24,10 +24,10 @@ int kernel_rw(u64 kva, void *buf, size_t len, int do_write);
 
 int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, unsigned int count);
 
-/* Resolve aarch64_insn_patch_text_nosync via kallsyms. Called once from
-   lifecycle.c init_driver() AFTER kallsym_init(). Non-fatal on miss:
-   write_ro_memory falls back to the legacy PTE-flip path (only safe on
-   kernels that do NOT map text with PTE_CONT). */
+/* Resolve aarch64_insn_patch_text_nosync and get_cmdline via kallsyms. Called
+   once from lifecycle.c init_driver() AFTER kallsym_init(). Missing symbols
+   are non-fatal: text writes retain their legacy fallback, while package
+   lookup reports -EOPNOTSUPP when get_cmdline is unavailable. */
 int memory_init(void);
 
 /* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync via kallsym
@@ -50,6 +50,12 @@ u64 process_get_tls(struct task_struct *task);
 
 /* Caller must put_task_struct() on the non-NULL return. */
 struct task_struct *process_find_task_by_comm(const char *comm);
+
+/* Find an exact process argv[0] and return the smallest TGID visible in the
+ * calling task's active PID namespace. get_cmdline() may sleep, so the
+ * implementation snapshots task references under RCU and scans them after
+ * leaving the read-side critical section. */
+int process_find_pid_by_package(const char *package, pid_t *out_pid);
 
 int process_maps_get_a(struct task_struct *task, void __user *u_buf, size_t cap);
 

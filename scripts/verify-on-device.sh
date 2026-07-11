@@ -54,7 +54,10 @@ DMESG="$OUT_DIR/dmesg-$TS.txt"
 # ---------------------------------------------------------------------------
 BUILD="$ROOT/scripts/build-probe"
 PROBE="$BUILD/drv_probe"
-if [ ! -x "$PROBE" ] || [ "$ROOT/scripts/src/drv_probe.c" -nt "$PROBE" ]; then
+if [ ! -x "$PROBE" ] \
+    || [ "$ROOT/scripts/src/drv_probe.c" -nt "$PROBE" ] \
+    || [ "$ROOT/scripts/CMakeLists.txt" -nt "$PROBE" ] \
+    || [ "$ROOT/driver/include/driver/uapi.h" -nt "$PROBE" ]; then
     echo "=== building drv_probe with NDK at $NDK"
     cmake -S "$ROOT/scripts" -B "$BUILD" \
         -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \

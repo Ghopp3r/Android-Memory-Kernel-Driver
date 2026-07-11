@@ -22,6 +22,7 @@
 #include <linux/path.h>
 #include <linux/pgtable.h>
 #include <linux/pid.h>
+#include <linux/pid_namespace.h>
 #include <linux/preempt.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
@@ -92,6 +93,13 @@ extern bool arm64_use_ng_mappings;
 typedef int (*drv_insn_patch_text_nosync_fn_t)(void *addr, u32 insn);
 static drv_insn_patch_text_nosync_fn_t drv_insn_patch_text_nosync;
 
+/* get_cmdline() has kept this signature across every supported Android GKI
+ * (5.10 through 6.12), but is not consistently exported to GKI modules.
+ * Resolve it once through the driver's existing kallsyms bridge so
+ * modpost/KMI allowlists do not gain a version-specific dependency. */
+typedef int (*drv_get_cmdline_fn_t)(struct task_struct *task, char *buffer, int buflen);
+static drv_get_cmdline_fn_t drv_get_cmdline;
+
 /* CFI-safe trampoline — mirrors kallsym_call_resolved in kallsym.c. The
    kallsyms-resolved address was not built with caller-side CFI metadata
    matching this typedef, so the indirect call must bypass kCFI. */
@@ -99,15 +107,29 @@ static __nocfi int drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn
 	return fn(addr, insn);
 }
 
-int memory_init(void) {
-	unsigned long addr = kallsym_lookup("aarch64_insn_patch_text_nosync");
+static noinline __nocfi int drv_call_get_cmdline(drv_get_cmdline_fn_t fn,
+						  struct task_struct *task,
+						  char *buffer, int buflen) {
+	return fn(task, buffer, buflen);
+}
 
+int memory_init(void) {
+	unsigned long addr;
+
+	addr = kallsym_lookup("aarch64_insn_patch_text_nosync");
 	if (!addr) {
 		pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
-		return 0; /* non-fatal: fallback path still works on non-CONT kernels */
+	} else {
+		drv_insn_patch_text_nosync = (drv_insn_patch_text_nosync_fn_t)addr;
 	}
 
-	drv_insn_patch_text_nosync = (drv_insn_patch_text_nosync_fn_t)addr;
+	addr = kallsym_lookup("get_cmdline");
+	if (!addr) {
+		pr_drv_warn("memory_init: get_cmdline not in kallsyms; package lookup disabled\n");
+	} else {
+		drv_get_cmdline = (drv_get_cmdline_fn_t)addr;
+	}
+
 	return 0;
 }
 
@@ -712,6 +734,138 @@ struct task_struct *process_find_task_by_comm(const char *comm) {
 	}
 	rcu_read_unlock();
 	return NULL;
+}
+
+/* A pathological process storm must not turn one ioctl into an unbounded
+ * allocation. Android devices normally have hundreds of process leaders;
+ * 65,536 still leaves ample headroom while bounding the snapshot at 512 KiB
+ * on arm64. */
+#define DRV_PROCESS_SNAPSHOT_MAX 65536u
+
+static int process_snapshot_tasks(struct task_struct ***out_tasks,
+					  size_t *out_count) {
+	struct task_struct **tasks;
+	struct task_struct *p;
+	size_t capacity = 0;
+	size_t count = 0;
+	size_t i;
+	bool overflow = false;
+
+	if (!out_tasks || !out_count)
+		return -EINVAL;
+
+	*out_tasks = NULL;
+	*out_count = 0;
+
+	/* First pass only sizes the allocation. No sleeping operation is allowed
+	 * while walking the RCU-protected global task list. */
+	rcu_read_lock();
+	for_each_process(p) {
+		if (capacity == DRV_PROCESS_SNAPSHOT_MAX) {
+			overflow = true;
+			break;
+		}
+		capacity++;
+	}
+	rcu_read_unlock();
+
+	if (overflow)
+		return -E2BIG;
+	if (!capacity)
+		return 0;
+
+	tasks = kvmalloc_array(capacity, sizeof(*tasks), GFP_KERNEL);
+	if (!tasks)
+		return -ENOMEM;
+
+	/* A second short RCU pass pins each leader. get_cmdline() is deliberately
+	 * deferred until after rcu_read_unlock() because it may take mmap locks
+	 * and sleep through access_process_vm(). */
+	overflow = false;
+	rcu_read_lock();
+	for_each_process(p) {
+		if (count == capacity) {
+			overflow = true;
+			break;
+		}
+		get_task_struct(p);
+		tasks[count++] = p;
+	}
+	rcu_read_unlock();
+
+	if (overflow) {
+		for (i = 0; i < count; i++)
+			put_task_struct(tasks[i]);
+		kvfree(tasks);
+		return -EAGAIN;
+	}
+
+	*out_tasks = tasks;
+	*out_count = count;
+	return 0;
+}
+
+int process_find_pid_by_package(const char *package, pid_t *out_pid) {
+	struct task_struct **tasks = NULL;
+	struct pid_namespace *pid_ns;
+	char cmdline[DRV_PACKAGE_NAME_MAX + 1u];
+	size_t package_len;
+	size_t task_count = 0;
+	size_t i;
+	pid_t best_pid = 0;
+	unsigned int attempt;
+	int rc;
+
+	if (!package || !out_pid)
+		return -EINVAL;
+
+	*out_pid = 0;
+	package_len = strnlen(package, DRV_PACKAGE_NAME_MAX + 1u);
+	if (!package_len)
+		return -EINVAL;
+	if (package_len > DRV_PACKAGE_NAME_MAX)
+		return -ENAMETOOLONG;
+	if (!drv_get_cmdline)
+		return -EOPNOTSUPP;
+
+	for (attempt = 0; attempt < 3; attempt++) {
+		rc = process_snapshot_tasks(&tasks, &task_count);
+		if (rc != -EAGAIN)
+			break;
+	}
+	if (rc)
+		return rc;
+
+	pid_ns = task_active_pid_ns(current);
+	for (i = 0; i < task_count; i++) {
+		struct task_struct *task = tasks[i];
+		size_t valid;
+		size_t argv0_len;
+		pid_t pid;
+		int nread;
+
+		nread = drv_call_get_cmdline(drv_get_cmdline, task, cmdline,
+						     (int)sizeof(cmdline));
+		if (nread > 0) {
+			valid = min_t(size_t, (size_t)nread, sizeof(cmdline));
+			argv0_len = strnlen(cmdline, valid);
+			if (argv0_len == package_len &&
+			    memcmp(cmdline, package, package_len) == 0) {
+				pid = task_tgid_nr_ns(task, pid_ns);
+				if (pid > 0 && (!best_pid || pid < best_pid))
+					best_pid = pid;
+			}
+		}
+
+		put_task_struct(task);
+	}
+	kvfree(tasks);
+
+	if (!best_pid)
+		return -ESRCH;
+
+	*out_pid = best_pid;
+	return 0;
 }
 
 int process_maps_get_a(struct task_struct *task, void __user *u_buf, size_t cap) {

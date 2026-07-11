@@ -90,6 +90,7 @@ public:
     bool installSigsegvSuppress();
     bool hideKgsl();
     std::optional<pid_t> findTaskByComm(const std::string& comm);
+    std::optional<pid_t> findPidByPackage(const std::string& package);
 
     Memory memory;
     Touch  touch;

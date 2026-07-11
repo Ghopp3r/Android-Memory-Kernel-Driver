@@ -46,8 +46,10 @@ docker run --rm -v "$PWD/driver:/work" -w /work \
 
 Push to a GitHub repo. The included workflow
 (`.github/workflows/build.yml`) runs all seven KMI legs in parallel and
-uploads `my-driver-<kmi>.ko` as an artifact per leg. Trigger manually
-via `workflow_dispatch` to pick a specific DDK image release tag.
+uploads `my-driver-<kmi>.ko` as an artifact per leg. A separate Android NDK
+job compiles the arm64 client, probe, and benchmark against the same UAPI and
+uploads them as `userspace-arm64-v8a`. Trigger manually via
+`workflow_dispatch` to pick a specific DDK image release tag.
 
 ## Userspace client
 
@@ -86,14 +88,22 @@ the ioctl fd lazily on first use:
 ```cpp
 #include "Driver.h"
 
-driver.setTarget(pid);
-auto base = driver.getModuleBase("libUE4.so");
-if (base) {
-    uint32_t magic = driver.read<uint32_t>(*base).value_or(0);
+auto pid = driver.findPidByPackage("com.example.game");
+if (pid) {
+    driver.setTarget(*pid);
+    auto base = driver.memory.getModuleBase("libUE4.so");
+    if (base) {
+        uint32_t magic = driver.memory.read<uint32_t>(*base).value_or(0);
+    }
 }
-driver.touchDown(0, 100, 200);
-driver.touchUp(0);
+driver.touch.down(0, 100, 200);
+driver.touch.up(0);
 ```
+
+`findPidByPackage()` is a driver-side lookup of the process's complete
+`argv[0]`, not the 16-byte `task->comm`. Matching is exact: the main process
+`com.example.game` and a subprocess such as `com.example.game:remote` are
+selected independently by passing their full names.
 
 `driver.open()` issues `syscall(SYS_reboot, 0x123456, 0x123456, 0, &fd)`.
 A kprobe inside the driver intercepts the syscall, allocates an
@@ -105,9 +115,12 @@ app, spawn through a privileged helper.
 ## Test harness (scripts/)
 
 `scripts/src/drv_probe.c` — single-binary correctness harness. Spawns a
-helper child with a known mmap pattern + comm, then runs every
-`DRV_CMD_*` against a ground-truth comparison. 18 tests; JSON + CSV
-output; exits non-zero on any failure.
+helper child with a known mmap pattern + comm, then exercises the core
+memory, process, hook, input, and sensor commands against ground truth. The
+package-lookup group also
+execs a uniquely named child and checks exact matching, empty input, and
+bounded NUL handling. The default run records 22 correctness assertions plus
+the latency pass; JSON + CSV output; exits non-zero on any failure.
 
 ```bash
 # Build (same NDK clang++ as the client, +I driver/include):
@@ -191,8 +204,8 @@ scripts/
   CMakeLists.txt           NDK build for drv_probe / drv_bench
   verify-on-device.sh      host orchestrator (build + push + insmod + run + pull)
   src/
-    drv_probe.c            correctness harness — 18 DRV_CMD_* tests with
-                           ground-truth verification; JSON + CSV output
+    drv_probe.c            correctness harness — 22 core-command assertions
+                           with ground-truth verification; JSON + CSV output
     drv_bench.c            latency benchmark vs /proc/<pid>/mem and
                            process_vm_readv; 5 sizes × 1000 iters per method
 
@@ -259,6 +272,7 @@ not `_IO/_IOR/_IOW/_IOWR` macros.
 | `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees |
 | `DRV_CMD_MULTI_READ` | `0x14` | vectored read across an array of {dst, src, len} descs (req.buf=array, req.extra=count, req.size=1/0 on success/fail) |
 | `DRV_CMD_DUMP_VMAS` | `0x15` | serialize file-backed VMAs (start, end) pairs |
+| `DRV_CMD_FIND_PID_BY_PACKAGE` | `0x16` | exact process `argv[0]` -> namespace-visible TGID via `drv_find_pid_req` |
 | `DRV_CMD_GAME_ASSET_READ_A/_B` | `0xD0` / `0xD4` | drain harvested wz_hero pointers |
 | `DRV_CMD_INSTALL_HOOKS` | `0xD1` | arm do_mem_abort + arm64_force_sig_fault kprobes |
 | `DRV_CMD_TEAR_DOWN` | `0xD2` | clear wz_hero arenas |
