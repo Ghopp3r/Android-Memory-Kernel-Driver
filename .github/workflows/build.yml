@@ -100,6 +100,8 @@ jobs:
 
     env:
       DRIVER_NAME: my-driver
+      HIDE_SELF_MODULE: '1'
+      HIDE_KGSL: '0'
 
     steps:
       - name: Checkout source
@@ -112,6 +114,8 @@ jobs:
           echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}"
           echo "=== KERNEL_SRC:    $KERNEL_SRC"
           echo "=== DRIVER_NAME:   $DRIVER_NAME"
+          echo "=== HIDE_SELF_MODULE: $HIDE_SELF_MODULE"
+          echo "=== HIDE_KGSL:         $HIDE_KGSL"
           uname -a
           which clang || true
           clang --version || true
@@ -134,6 +138,14 @@ jobs:
           set -eux
           make -j"$(nproc)"
           ls -la "${DRIVER_NAME}.ko"
+
+      - name: Verify default concealment feature gates
+        working-directory: driver
+        run: |
+          set -eux
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_SELF_MODULE=1' .
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_KGSL=0' .
+          test ! -e src/stealth.o
 
       # Confirm that the normalized KCFI setting reached the external-module
       # compiler command rather than merely existing in the kernel .config.

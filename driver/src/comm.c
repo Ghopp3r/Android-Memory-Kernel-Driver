@@ -41,7 +41,9 @@
 #include "log.h"
 #include "memory.h"
 #include "sensor.h"
+#if KCFG_HIDE_KGSL
 #include "stealth.h"
+#endif
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
 
@@ -92,6 +94,7 @@ static int drv_close_fd(unsigned int fd) {
 /* Sanity cap on attacker-controlled req.size for the bulk memory cmd transfers. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Bounding the per-ioctl byte count also caps the mmap_read_lock hold time on the target. */
 #define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
 
+#if KCFG_HIDE_KGSL
 /* Plausibility check for a pointer pulled out of a downstream vendor struct
  * via a hard-coded offset. NULL passes (an empty rbtree holder is valid).
  * Non-NULL must have bit 63 set (ARM64 kernel VAs) AND be pointer-aligned.
@@ -101,6 +104,7 @@ static inline bool drv_looks_like_kptr_or_null(const void *p) {
 	uintptr_t v = (uintptr_t)p;
 	return v == 0 || (((v >> 63) & 1u) && IS_ALIGNED(v, sizeof(void *)));
 }
+#endif
 
 /* .owner=THIS_MODULE pins module text for as long as any client holds the fd. */
 const struct file_operations inofile_fops = {
@@ -385,6 +389,7 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 			result = process_get_tls(task);
 		break;
 	case DRV_CMD_HIDE_KGSL: {
+#if KCFG_HIDE_KGSL
 		void *kgsl = resolve_kgsl_driver();
 		void *holder_a;
 		void *holder_b;
@@ -415,6 +420,9 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		hide_kgsl(holder_a, (int)req.pid);
 		hide_kgsl2(holder_b, (int)req.pid);
 		result = 0;
+#else
+		result = (u64)(s64)-EOPNOTSUPP;
+#endif
 		break;
 	}
 	case DRV_CMD_MULTI_READ:

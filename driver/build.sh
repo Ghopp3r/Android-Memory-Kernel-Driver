@@ -11,6 +11,7 @@
 #
 # Examples:
 #   ./build.sh android15-6.6
+#   HIDE_SELF_MODULE=0 HIDE_KGSL=1 ./build.sh android16-6.12
 #   ./build.sh android14-6.1 20251104
 #   ./build.sh android13-5.10 20250825
 #
@@ -33,6 +34,8 @@ set -euo pipefail
 DEFAULT_KMI="android15-6.6"
 DEFAULT_RELEASE="20251104"
 DRIVER_NAME="${DRIVER_NAME:-my-driver}"
+HIDE_SELF_MODULE="${HIDE_SELF_MODULE:-1}"
+HIDE_KGSL="${HIDE_KGSL:-0}"
 
 KMI="${1:-$DEFAULT_KMI}"
 RELEASE="${2:-$DEFAULT_RELEASE}"
@@ -40,6 +43,15 @@ REQUIRE_6_12_KCFI=0
 if [[ "${KMI}" == "android16-6.12" ]]; then
     REQUIRE_6_12_KCFI=1
 fi
+
+case "${HIDE_SELF_MODULE}" in
+    0|1) ;;
+    *) echo "ERROR: HIDE_SELF_MODULE must be 0 or 1." >&2; exit 2 ;;
+esac
+case "${HIDE_KGSL}" in
+    0|1) ;;
+    *) echo "ERROR: HIDE_KGSL must be 0 or 1." >&2; exit 2 ;;
+esac
 
 if [[ "${KMI}" == "-h" || "${KMI}" == "--help" ]]; then
     sed -n '2,30p' "$0"
@@ -56,6 +68,8 @@ echo "  KMI:           ${KMI}"
 echo "  DDK release:   ${RELEASE}"
 echo "  Image:         ${IMAGE}"
 echo "  Driver name:   ${DRIVER_NAME}"
+echo "  LKM hide:      ${HIDE_SELF_MODULE}"
+echo "  KGSL hide:     ${HIDE_KGSL}"
 echo "  Source dir:    ${SCRIPT_DIR}"
 echo "============================================================"
 
@@ -86,6 +100,8 @@ docker run --rm \
     -v "${SCRIPT_DIR}:/work" \
     -w /work \
     -e "DRIVER_NAME=${DRIVER_NAME}" \
+    -e "HIDE_SELF_MODULE=${HIDE_SELF_MODULE}" \
+    -e "HIDE_KGSL=${HIDE_KGSL}" \
     -e "REQUIRE_6_12_KCFI=${REQUIRE_6_12_KCFI}" \
     "${IMAGE}" \
     bash -c '

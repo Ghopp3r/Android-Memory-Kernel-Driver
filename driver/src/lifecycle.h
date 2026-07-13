@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Module initialization and version-gated legacy self-concealment.
+// Module initialization and compile-time self-concealment.
 #ifndef DRIVER_LIFECYCLE_H
 #define DRIVER_LIFECYCLE_H
 

@@ -14,6 +14,20 @@
 # "my-driver"). The resulting artefact is $(DRIVER_NAME).ko.
 # -----------------------------------------------------------------------------
 DRIVER_NAME ?= my-driver
+HIDE_SELF_MODULE ?= 1
+HIDE_KGSL ?= 0
+
+ifneq ($(HIDE_SELF_MODULE),0)
+ifneq ($(HIDE_SELF_MODULE),1)
+$(error HIDE_SELF_MODULE must be 0 or 1)
+endif
+endif
+
+ifneq ($(HIDE_KGSL),0)
+ifneq ($(HIDE_KGSL),1)
+$(error HIDE_KGSL must be 0 or 1)
+endif
+endif
 
 obj-m += $(DRIVER_NAME).o
 
@@ -31,10 +45,13 @@ $(DRIVER_NAME)-objs := \
 	src/input_synth.o     \
 	src/sensor.o          \
 	src/harvest.o         \
-	src/stealth.o         \
 	src/hook_engine.o     \
 	src/uaccess_target.o  \
 	src/kallsym.o
+
+ifeq ($(HIDE_KGSL),1)
+$(DRIVER_NAME)-objs += src/stealth.o
+endif
 
 # -----------------------------------------------------------------------------
 # Compiler flags.
@@ -70,6 +87,11 @@ ccflags-y += -Wno-unused-variable
 #                         in regs[0]/regs[1] (inner wrapped pt_regs).
 #                         uapi.h exposes the same value as
 #                         DRIVER_REBOOT_MAGIC1/2 for the userspace client.
+#
+#   HIDE_SELF_MODULE    - remove this module from module lists/sysfs (0 or 1,
+#                         default 1).
+#   HIDE_KGSL           - include the vendor-specific KGSL concealment ioctl
+#                         implementation (0 or 1, default 0).
 # -----------------------------------------------------------------------------
 TARGET_PKG ?= "cent.tmgp.sgame"
 ANON_INODE_NAME ?= "[driver]"
@@ -79,9 +101,8 @@ ccflags-y += -DKCFG_TARGET_PACKAGE='$(TARGET_PKG)'
 ccflags-y += -DKCFG_DRIVER_NAME='"$(DRIVER_NAME)"'
 ccflags-y += -DKCFG_ANON_INODE_NAME='$(ANON_INODE_NAME)'
 ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
-
-# Module self-concealment is selected in lifecycle.c from LINUX_VERSION_CODE:
-# enabled for the supported 5.10-6.6 kernels and compiled out for 6.12+.
+ccflags-y += -DKCFG_HIDE_SELF_MODULE=$(HIDE_SELF_MODULE)
+ccflags-y += -DKCFG_HIDE_KGSL=$(HIDE_KGSL)
 
 # -----------------------------------------------------------------------------
 # Optional feature gates (off by default — uncomment in your local Kbuild or

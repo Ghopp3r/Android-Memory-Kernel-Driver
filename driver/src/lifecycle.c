@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Module entry point + legacy self-concealment for kernels before 6.12. */
+/* Module entry point + compile-time module self-concealment. */
 
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -7,19 +7,8 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/version.h>
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
-#define DRV_LEGACY_SELF_CONCEAL 1
-#else
-#define DRV_LEGACY_SELF_CONCEAL 0
-#endif
-
-#if !DRV_LEGACY_SELF_CONCEAL && defined(KCFG_HIDE_SELF_MODULE)
-#error "self-concealment must not be enabled on kernel 6.12+"
-#endif
-
-#if DRV_LEGACY_SELF_CONCEAL
+#if KCFG_HIDE_SELF_MODULE
 #include <linux/kobject.h>
 #include <linux/list.h>
 #include <linux/poison.h>
@@ -39,10 +28,9 @@
 
 struct drv_state drv;
 
-#if DRV_LEGACY_SELF_CONCEAL
-/* Preserve the original driver's self-concealment on the older supported
- * kernels. This directly mutates loader-owned state and is intentionally
- * compiled out for 6.12+, where it is unsafe during module finalisation. */
+#if KCFG_HIDE_SELF_MODULE
+/* Preserve the original driver's self-concealment when requested at build
+ * time. This directly mutates loader-owned state on every supported KMI. */
 static void conceal_module(void) {
 	struct module *mod = THIS_MODULE;
 
@@ -125,7 +113,7 @@ int __init init_driver(void) {
 		return ret;
 	}
 
-#if DRV_LEGACY_SELF_CONCEAL
+#if KCFG_HIDE_SELF_MODULE
 	conceal_module();
 #endif
 	return 0;

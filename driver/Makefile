@@ -48,6 +48,10 @@ DRIVER_NAME ?= my-driver
 # override from the shell.
 TARGET_PKG ?= "cent.tmgp.sgame"
 
+# Optional compile-time concealment features (strict boolean values).
+HIDE_SELF_MODULE ?= 1
+HIDE_KGSL ?= 0
+
 # KDIR resolution order:
 #   1) explicit `make KDIR=...` on the command line
 #   2) $KERNEL_SRC inside a ghcr.io/ylarod/ddk container
@@ -65,6 +69,8 @@ PWD := $(shell pwd)
 # Pass-through variables that the Kbuild file consumes.
 export DRIVER_NAME
 export TARGET_PKG
+export HIDE_SELF_MODULE
+export HIDE_KGSL
 
 .PHONY: all modules clean help compdb modules_install
 
@@ -103,5 +109,7 @@ help:
 	@echo "  KDIR=<path>         - kernel build tree (default: \$$KERNEL_SRC or /lib/modules/\$$(uname -r)/build)"
 	@echo "  DRIVER_NAME=<name>  - output .ko basename (default: my-driver)"
 	@echo "  TARGET_PKG='\"...\"' - Android package name baked into the driver (default: \"cent.tmgp.sgame\")"
+	@echo "  HIDE_SELF_MODULE=0|1 - hide the LKM from module lists/sysfs (default: 1)"
+	@echo "  HIDE_KGSL=0|1       - enable KGSL process concealment ioctl (default: 0)"
 
 endif

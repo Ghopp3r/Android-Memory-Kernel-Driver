@@ -3,7 +3,6 @@
 #include "SensorResolve.h"
 
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -60,10 +59,8 @@ bool CDriver::installSigsegvSuppress() {
 }
 
 bool CDriver::hideKgsl() {
-    char pidStr[32];
-    std::snprintf(pidStr, sizeof(pidStr), "%d", static_cast<int>(m_targetPid));
     drv_ioctl_req req{};
-    req.addr = reinterpret_cast<uint64_t>(pidStr);
+    req.pid = static_cast<uint32_t>(m_targetPid);
     if (doIoctl(DRV_CMD_HIDE_KGSL, &req) < 0) return false;
     return static_cast<int64_t>(req.size) >= 0;
 }

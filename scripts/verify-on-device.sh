@@ -76,8 +76,8 @@ echo "=== pushing artefacts"
 "$ADB" shell 'su -c "chmod 755 /data/local/tmp/test/drv_probe; rm -f /data/local/tmp/test/results.json /data/local/tmp/test/timing.csv"'
 
 # ---------------------------------------------------------------------------
-# 3) insmod. android15-6.6 uses legacy self-concealment; every KMI is
-# intentionally non-unloadable, so reboot before loading a replacement.
+# 3) insmod. The default build uses compile-time self-concealment; every KMI
+# is intentionally non-unloadable, so reboot before loading a replacement.
 # ---------------------------------------------------------------------------
 echo "=== insmod"
 "$ADB" shell 'su -c "dmesg -C 2>/dev/null || true; insmod /data/local/tmp/test/my-driver-android15-6.6.ko"'

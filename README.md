@@ -3,9 +3,9 @@
 Android ARM64 loadable kernel module — 1:1 reverse-engineered
 reconstruction of a real privileged R/W + input-injection + sensor-spoof
 + page-fault-harvest driver. Speaks to userspace over an `ioctl()`
-channel obtained via a magic `reboot()` handshake — no `/dev` node. Builds
-for kernels 5.10 through 6.6 retain the original module-list/sysfs concealment;
-the Android 16 / 6.12 build stays registered with the normal module lifecycle.
+channel obtained via a magic `reboot()` handshake — no `/dev` node. By default,
+all supported KMI builds retain the original module-list/sysfs concealment;
+the vendor-specific KGSL process concealment is compiled out by default.
 
 Field-based source against GKI kernel headers — one source tree builds
 seven KMI variants via the Docker DDK image. Code uses `task->mm` /
@@ -22,7 +22,7 @@ layout is the compiler's problem at build time.
 | `android14-5.15`   | 5.15   | 14      | hidden            | ✅ |
 | `android14-6.1`    | 6.1    | 14      | hidden            | ✅ |
 | `android15-6.6`    | 6.6    | 15      | hidden            | ✅ (device-tested) |
-| `android16-6.12`   | 6.12   | 16      | visible           | ✅ |
+| `android16-6.12`   | 6.12   | 16      | hidden            | ✅ |
 
 Runtime device-coverage is currently the `android15-6.6` leg
 (NP05J / Vivo / kernel `6.6.56 android15-8 GKI` / KernelSU root). The
@@ -34,6 +34,9 @@ other six legs are compile-validated by CI but not yet runtime-tested.
 cd driver
 ./build.sh android15-6.6        # or any KMI from the table
 # -> driver/my-driver.ko
+
+# Optional feature overrides:
+HIDE_SELF_MODULE=0 HIDE_KGSL=1 ./build.sh android16-6.12
 ```
 
 Equivalent one-liner:
@@ -180,7 +183,7 @@ driver/
     uapi.h             shared kernel<->userspace ioctl surface
     types.h            internal driver state types
   src/
-    lifecycle.c        module initialization + self-conceal on kernels < 6.12
+    lifecycle.c        module initialization + compile-time self-concealment
     comm.c             reboot() handshake (kprobe on __arm64_sys_reboot) +
                        dispatch_ioctl router
     memory.c           process pagewalk + read/write_process_memory_linear,
@@ -222,7 +225,8 @@ scripts/
 ## Configurable knobs
 
 ```bash
-make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"'
+make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"' \
+     HIDE_SELF_MODULE=1 HIDE_KGSL=0
 ```
 
 | Kbuild variable | default | what it sets |
@@ -231,17 +235,25 @@ make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"'
 | `TARGET_PKG` | `"cent.tmgp.sgame"` | package the harvest path activates on (quotes required) |
 | `ANON_INODE_NAME` | `"[driver]"` | name passed to `anon_inode_getfile` (visible at `/proc/<pid>/fd/<n>`) |
 | `REBOOT_MAGIC` | `0x123456u` | sentinel magic the reboot() handshake matches in `inner_regs[0]/[1]` |
+| `HIDE_SELF_MODULE` | `1` | compile the LKM module-list/sysfs concealment path (`0` or `1`) |
+| `HIDE_KGSL` | `0` | compile the vendor-specific KGSL process concealment path (`0` or `1`) |
 
 ## Device caveats
 
-**Module lifecycle.** On kernels 5.10 through 6.6 the legacy concealment path
-removes the module from `/proc/modules` and `/sys/module` after initialization.
-It directly mutates loader-owned lists and the module kobject, retaining the
-same race and maintenance risk as the reconstructed driver. On 6.12+ that code
-is compiled out and the module remains visible. Every build intentionally has
-no unload entry point: lazy kprobes, uprobes, and task-work callbacks can retain
-driver pointers after an ioctl, so reboot the device before replacing a loaded
+**Module lifecycle.** With the default `HIDE_SELF_MODULE=1`, the concealment
+path removes the module from `/proc/modules` and `/sys/module` after
+initialization on every supported KMI, including Android 16 / 6.12. It directly
+mutates loader-owned lists and the module kobject, retaining the same race and
+maintenance risk as the reconstructed driver. Set `HIDE_SELF_MODULE=0` when a
+visible module is needed for debugging. Every build intentionally has no unload
+entry point: lazy kprobes, uprobes, and task-work callbacks can retain driver
+pointers after an ioctl, so reboot the device before replacing a loaded
 artifact.
+
+**KGSL concealment.** The vendor-specific KGSL rbtree walker is disabled by
+default (`HIDE_KGSL=0`) because its offsets are not stable across Qualcomm BSPs.
+Set `HIDE_KGSL=1` only for a matching device build; otherwise `DRV_CMD_HIDE_KGSL`
+returns `-EOPNOTSUPP`.
 
 **Vendor RKP / kernel-text integrity protection.** On the NP05J target
 (Vivo, kernel `6.6.56 android15-8 GKI`) any modification of
@@ -285,7 +297,7 @@ not `_IO/_IOR/_IOW/_IOWR` macros.
 | `DRV_CMD_FIND_TASK_BY_COMM` | `0x10` | find pid by `task->comm` |
 | `DRV_CMD_READ_VMA_COOKIE` | `0x11` | walk mm_mt by anon_vma_name tag |
 | `DRV_CMD_GET_TLS` | `0x12` | target task's saved TPIDR_EL0 |
-| `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees |
+| `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees when built with `HIDE_KGSL=1` |
 | `DRV_CMD_MULTI_READ` | `0x14` | vectored read across an array of {dst, src, len} descs (req.buf=array, req.extra=count, req.size=1/0 on success/fail) |
 | `DRV_CMD_DUMP_VMAS` | `0x15` | serialize file-backed VMAs (start, end) pairs |
 | `DRV_CMD_FIND_PID_BY_PACKAGE` | `0x16` | exact process `argv[0]` -> namespace-visible TGID via `drv_find_pid_req` |
