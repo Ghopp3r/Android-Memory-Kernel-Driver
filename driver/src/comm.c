@@ -33,6 +33,12 @@
 #define __nocfi
 #endif
 
+#if KCFG_HIDE_KGSL && LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+#define DRV_KGSL_ENABLED 1
+#else
+#define DRV_KGSL_ENABLED 0
+#endif
+
 #include "comm.h"
 #include "harvest.h"
 #include "hook_engine.h"
@@ -41,7 +47,7 @@
 #include "log.h"
 #include "memory.h"
 #include "sensor.h"
-#if KCFG_HIDE_KGSL
+#if DRV_KGSL_ENABLED
 #include "stealth.h"
 #endif
 
@@ -94,7 +100,7 @@ static int drv_close_fd(unsigned int fd) {
 /* Sanity cap on attacker-controlled req.size for the bulk memory cmd transfers. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Bounding the per-ioctl byte count also caps the mmap_read_lock hold time on the target. */
 #define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
 
-#if KCFG_HIDE_KGSL
+#if DRV_KGSL_ENABLED
 /* Plausibility check for a pointer pulled out of a downstream vendor struct
  * via a hard-coded offset. NULL passes (an empty rbtree holder is valid).
  * Non-NULL must have bit 63 set (ARM64 kernel VAs) AND be pointer-aligned.
@@ -389,7 +395,7 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 			result = process_get_tls(task);
 		break;
 	case DRV_CMD_HIDE_KGSL: {
-#if KCFG_HIDE_KGSL
+#if DRV_KGSL_ENABLED
 		void *kgsl = resolve_kgsl_driver();
 		void *holder_a;
 		void *holder_b;

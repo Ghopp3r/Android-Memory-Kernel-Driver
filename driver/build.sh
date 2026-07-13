@@ -11,7 +11,7 @@
 #
 # Examples:
 #   ./build.sh android15-6.6
-#   HIDE_SELF_MODULE=0 HIDE_KGSL=1 ./build.sh android16-6.12
+#   HIDE_SELF_MODULE=0 HIDE_KGSL=1 ./build.sh android15-6.6
 #   ./build.sh android14-6.1 20251104
 #   ./build.sh android13-5.10 20250825
 #
@@ -52,6 +52,11 @@ case "${HIDE_KGSL}" in
     0|1) ;;
     *) echo "ERROR: HIDE_KGSL must be 0 or 1." >&2; exit 2 ;;
 esac
+
+if [[ "${KMI}" == "android16-6.12" && "${HIDE_KGSL}" == "1" ]]; then
+    echo "WARNING: KGSL concealment is disabled for android16-6.12; forcing HIDE_KGSL=0."
+    HIDE_KGSL=0
+fi
 
 if [[ "${KMI}" == "-h" || "${KMI}" == "--help" ]]; then
     sed -n '2,30p' "$0"

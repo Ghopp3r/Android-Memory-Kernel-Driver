@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* GPU(KGSL/Adreno) process concealment: unlink target PID from kgsl_driver rbtrees. */
 
+#include <linux/version.h>
+
+#if KCFG_HIDE_KGSL && LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+
 #include <linux/kernel.h>
 #include <linux/kstrtox.h>
 #include <linux/printk.h>
@@ -96,3 +100,5 @@ long hide_kgsl(void *kgsl_proc_list_root, int target_pid) {
 long hide_kgsl2(void *kgsl_proc_list_root, int target_pid) {
 	return __hide_kgsl_one(kgsl_proc_list_root, target_pid);
 }
+
+#endif /* KCFG_HIDE_KGSL && kernel < 6.12 */
