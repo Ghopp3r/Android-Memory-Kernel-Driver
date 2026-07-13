@@ -10,8 +10,10 @@
 #define SENSOR_TARGET_SO "/system/lib64/libsensorservice.so"
 #endif
 
-/* @event_type: 1 => gyro layout (X@+0x18, Y@+0x1C); else accel (X@+0x10, Y@+0x14). Calls kern_path, optionally d_real ()-unwraps for overlayfs (gated by DCACHE_OP_REAL + CFI type-id check), then uprobe_register. */
-int sensor_hook_init(unsigned long probe_offset, int event_type);
+/* @layout_profile is enum drv_sensor_layout: HIDL V1.0 uses Vec3 at +0x10;
+ * AIDL V1 uses a tagged payload with Vec3 at +0x18. Calls kern_path,
+ * optionally d_real()-unwraps overlayfs, then registers the uprobe. */
+int sensor_hook_init(unsigned long probe_offset, int layout_profile);
 
 int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs);
 
@@ -21,6 +23,5 @@ u32 fadd(u32 a, u32 b);
 extern u8  gyro_enable;
 extern u32 gyro_x;
 extern u32 gyro_y;
-extern int event_type;
 
 #endif /* DRIVER_SENSOR_H */

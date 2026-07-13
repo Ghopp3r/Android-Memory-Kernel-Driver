@@ -513,9 +513,12 @@ static long do_hook_cmd(unsigned int cmd, void __user *arg) {
 
 static long do_input_cmd(unsigned int cmd, void __user *arg) {
 	struct drv_touch_inject_req t;
+	int ret;
 
 	/* lazy idempotent install of input-event kprobes + event pool */
-	(void)install_input_hooks();
+	ret = install_input_hooks();
+	if (ret)
+		return ret;
 
 	switch (cmd) {
 	case DRV_CMD_TOUCH_DOWN:
@@ -545,7 +548,9 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 			return -EFAULT;
 
 		if (req.pid == 100) {
-			/* first-time bind: arm the libsensorservice uprobe */
+			/* Bind the libsensorservice uprobe to an explicit Event ABI. */
+			if (req.size >= DRV_SENSOR_LAYOUT_COUNT)
+				return -EINVAL;
 			return sensor_hook_init((unsigned long)req.addr, (int)req.size);
 		}
 

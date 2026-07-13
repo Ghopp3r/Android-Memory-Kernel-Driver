@@ -30,6 +30,16 @@
 #define DRIVER_IOCTL_PING 0x9FBF1u
 #define DRIVER_IOCTL_HELLO 0x1E240u
 
+/* ABI layout of the Event reference passed in x0 to the selected
+ * convertToSensorEvent(const Event&, sensors_event_t*) implementation.
+ * These values are carried in drv_ioctl_req.size for DRV_CMD_SENSOR_BIND;
+ * keep them stable for existing userspace clients. */
+enum drv_sensor_layout {
+	DRV_SENSOR_LAYOUT_HIDL_V1 = 0,
+	DRV_SENSOR_LAYOUT_AIDL_V1 = 1,
+	DRV_SENSOR_LAYOUT_COUNT,
+};
+
 /* dispatch_ioctl is a switch keyed by the RAW cmd integer (NOT _IO/_IOR/_IOW/_IOWR macros — the binary uses naked integer compares). Sub-ranges: 0x0B..0x16  memory / process commands 0xD0..0xD5  game-asset / hook-install commands 0x12D..0x18F input-event synthesis commands (lazy-init range) / */
 enum drv_cmd {
 	DRV_CMD_READ_MEM_LINEAR         = 0x0B,
@@ -62,7 +72,8 @@ enum drv_cmd {
 	/* First call lazily registers vfs_read_kp on /dev/input/event* reads. */
 	DRV_CMD_TOUCH_SLOT_LEGACY       = 0x136,
 
-	/* field0 == 100 binds the sensor kprobes; else sets gyro_x/gyro_y/enable. */
+	/* pid == 100 binds a sensor uprobe: addr=ELF file offset,
+	 * size=enum drv_sensor_layout. Otherwise sets gyro_x/gyro_y/enable. */
 	DRV_CMD_SENSOR_BIND             = 0x140,
 
 	/* Range guards: all cmd values in [FIRST, LAST] enter the lazy-init prelude even if no specific case matches. */

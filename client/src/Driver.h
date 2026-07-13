@@ -65,7 +65,7 @@ public:
     class Gyro {
     public:
         Gyro(CDriver& d) : m_d(d) {}
-        bool bind(uint64_t probeOffset, int eventType);
+        bool bind(uint64_t probeOffset, int layoutProfile);
         bool bindAuto();
         bool write(float dx, float dy, bool enable);
         bool isArmed() const { return m_armed; }

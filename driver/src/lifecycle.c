@@ -54,8 +54,9 @@ static void conceal_module(void) {
  * m_page_level = (60 - T1SZ) / 9 == ceil((48 - T1SZ) / 9). For VA_BITS=39
  * (NP05J / Vivo / Android 6.6 typical) T1SZ=25 -> level_count=3 (PUD->PMD->PTE).
  * For VA_BITS=48 (other GKI configs) T1SZ=16 -> level_count=4. LPA2 / VA_BITS=52
- * yields level_count=5 and is refused at module init below; the manual PTE-flip
- * walker does not handle 5-level paging. */
+ * yields level_count=5. The process-memory walker uses the kernel's pgtable
+ * helpers and supports it; the legacy text PTE-flip fallback rejects an
+ * unsupported depth locally instead of blocking unrelated driver features. */
 static void mm_globals_init(void) {
 	u64 tcr = read_sysreg(tcr_el1);
 	u64 ttbr1 = read_sysreg(ttbr1_el1);
@@ -76,19 +77,10 @@ int __init init_driver(void) {
 	/* Capture swapper_pg_dir + pagewalk depth before any hook path can run -- write_ro_memory's level_count==0 guard would silently no-op every patch otherwise. */
 	mm_globals_init();
 
-	/* Manual PTE-flip walker (memory.c:write_ro_memory_pte_flip) and every
-	 * inline-hook path that depends on it support only 3- and 4-level
-	 * paging. Refuse to load on LPA2 / VA_BITS=52 (level_count==5) and on
-	 * any obviously-broken read. The kallsyms-resolved fast path
-	 * (aarch64_insn_patch_text_nosync) does not care, but our fallback
-	 * does — failing here gives userspace a hard signal instead of a
-	 * "loaded but every patch is a silent no-op" state. */
-	if (drv.m_page_level < 3 || drv.m_page_level > 4) {
-		pr_drv_err("unsupported page level %u (need 3 or 4); aborting\n",
-			   drv.m_page_level);
-		return -ENOTSUPP;
-	}
-
+	/* Do not reject the whole module based on the legacy text walker's
+	 * limits. write_ro_memory_pte_flip() is gated by granule and depth at
+	 * its call site; aarch64_insn_patch_text_nosync() and the process-memory
+	 * walkers are independent of drv.m_page_level. */
 	/* Resolve kallsyms_lookup_name + every kallsym-shimmed function pointer that a kprobe pre-handler may need (currently just task_work_add). Done here, in process context, so the prctl/reboot pre-handlers never re-enter register_kprobe in atomic context. */
 	ret = kallsym_init();
 	if (ret < 0) {
@@ -97,8 +89,9 @@ int __init init_driver(void) {
 	}
 
 	/* Resolve the kernel's text patcher and get_cmdline BEFORE any ioctl/hook
-	 * path can use them. Missing symbols are non-fatal: text writes retain the
-	 * legacy fallback and package lookup reports -EOPNOTSUPP. */
+	 * path can use them. Missing symbols are non-fatal: the text writer uses
+	 * its locally gated fallback where supported, and package lookup reports
+	 * -EOPNOTSUPP. */
 	(void)memory_init();
 
 	ret = comm_warm_symbols();

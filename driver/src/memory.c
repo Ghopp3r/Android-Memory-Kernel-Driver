@@ -23,7 +23,6 @@
 #include <linux/pgtable.h>
 #include <linux/pid.h>
 #include <linux/pid_namespace.h>
-#include <linux/preempt.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -67,19 +66,14 @@
 /* write_ro_memory PTE bit-flip: clear PTE_RDONLY(bit 7), set PTE_DBM(bit 51). */
 #define DRV_PTE_RDONLY_CLEAR 0xFFF7FFFFFFFFFF7FULL
 #define DRV_PTE_DBM_SET 0x0008000000000000ULL
-/* vmap prot: PTE_VALID|PTE_AF|PTE_SHARED|PTE_PXN|PTE_UXN|PTE_TYPE_PAGE; KPTI adds PTE_NG. */
-#define DRV_VMAP_PROT_KPTI_OFF 0x6800000000070BULL
-#define DRV_VMAP_PROT_KPTI_ON 0x68000000000F0BULL
 
 /* Two distinct dcache-line caches — one for linear-map, one for vmap. */
 static u32 dcache_line_size_linear;
 static u32 dcache_line_size_vmap;
 
-extern bool arm64_use_ng_mappings;
-
 /* Resolved once at module init via kallsym_lookup. The kernel's own
    self-modifying-text primitive: installs the target PFN in FIX_TEXT_POKE0
-   (a single 4 KiB fixmap slot, allocated WITHOUT PTE_CONT by construction),
+   (a single fixmap page, allocated WITHOUT PTE_CONT by construction),
    writes the u32 through the RW fixmap alias, performs the architectural
    caches_clean_inval_pou + broadcast IS TLBI, then tears the fixmap down.
    Eliminates the contig-block BBM hazard that broke the bespoke PTE-flip
@@ -118,7 +112,16 @@ int memory_init(void) {
 
 	addr = kallsym_lookup("aarch64_insn_patch_text_nosync");
 	if (!addr) {
-		pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
+#if PAGE_SHIFT == 12
+		if (drv.m_page_level >= 3 && drv.m_page_level <= 4)
+			pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
+		else
+			pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for page-table depth %u\n",
+				    drv.m_page_level);
+#else
+		pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for PAGE_SHIFT=%u\n",
+			    (unsigned int)PAGE_SHIFT);
+#endif
 	} else {
 		drv_insn_patch_text_nosync = (drv_insn_patch_text_nosync_fn_t)addr;
 	}
@@ -181,55 +184,22 @@ static inline u64 drv_lm_va_from_phys(u64 phys) {
 	return (u64)(uintptr_t)phys_to_virt(phys & PAGE_MASK);
 }
 
-static bool drv_section_online(u64 page_pa) {
-	unsigned long pfn = page_pa >> PAGE_SHIFT;
-	bool online;
-
-	/* preempt_disable bracketing matches the binary's RCU-equivalent quiescence. */
-	preempt_disable();
-	online = pfn_valid(pfn);
-	preempt_enable();
-	return online;
-}
-
-/* Canonical pagewalk: caller must hold mmap_read_lock(mm) for a user mm. p4d_offset is unconditional; pgtable-nop4d.h folds it to a passthrough on 3-level configs. pud_leaf/pmd_leaf early-exits cover 1G/2M hugepages. pte_offset_kernel — NOT pte_offset_map — to side-step the 6.5 failable/RCU rework. */
-static pte_t *drv_pte_lookup(struct mm_struct *mm, unsigned long addr) {
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
-
-	pgd = pgd_offset(mm, addr);
-	if (pgd_none(*pgd) || pgd_bad(*pgd))
-		return NULL;
-
-	p4d = p4d_offset(pgd, addr);
-	if (p4d_none(*p4d) || p4d_bad(*p4d))
-		return NULL;
-
-	pud = pud_offset(p4d, addr);
-	if (pud_none(*pud) || pud_bad(*pud))
-		return NULL;
-#if defined(pud_leaf)
-	if (pud_leaf(*pud))
-		return (pte_t *)pud;
-#endif
-
-	pmd = pmd_offset(pud, addr);
-	if (pmd_none(*pmd) || pmd_bad(*pmd))
-		return NULL;
-#if defined(pmd_leaf)
-	if (pmd_leaf(*pmd))
-		return (pte_t *)pmd;
-#endif
-
-	return pte_offset_kernel(pmd, addr);
-}
-
+/* Canonical pagewalk: caller holds mmap_read_lock(mm). Folded levels are
+ * handled by the kernel helpers; PUD/PMD leaves use the configured granule's
+ * block sizes. pte_offset_kernel avoids the 6.5 failable/RCU map API rework. */
 int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
+	unsigned long addr = (unsigned long)va;
+	unsigned long pfn;
+	pgd_t *pgdp;
+	p4d_t *p4dp;
+	pud_t *pudp;
+	pmd_t *pmdp;
 	pte_t *ptep;
+	pgd_t pgd;
+	p4d_t p4d;
+	pud_t pud;
+	pmd_t pmd;
 	pte_t pte;
-	u64 phys;
 
 	if (!mm || !out_phys)
 		return -EFAULT;
@@ -237,27 +207,65 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	if (!mm->pgd)
 		return -EFAULT;
 
-	ptep = drv_pte_lookup(mm, (unsigned long)va);
+	/* The caller holds mmap_read_lock(mm). Read each descriptor once so the
+	 * validation and PA extraction use the same hardware-updatable value.
+	 * Folded levels become passthroughs on the relevant arm64 configs. */
+	pgdp = pgd_offset(mm, addr);
+	pgd = READ_ONCE(*pgdp);
+	if (pgd_none(pgd) || pgd_bad(pgd))
+		return -EFAULT;
+
+	p4dp = p4d_offset(pgdp, addr);
+	p4d = READ_ONCE(*p4dp);
+	if (p4d_none(p4d) || p4d_bad(p4d))
+		return -EFAULT;
+
+	pudp = pud_offset(p4dp, addr);
+	pud = READ_ONCE(*pudp);
+	if (pud_none(pud))
+		return -EFAULT;
+
+	/* A valid arm64 block descriptor is not a next-level table descriptor,
+	 * so pud_bad()/pmd_bad() report it as bad. Test leaves first and add the
+	 * base-page index inside the complete block mapping. */
+	if (pud_leaf(pud)) {
+		if (!pud_present(pud))
+			return -EFAULT;
+		pfn = pud_pfn(pud) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
+		goto resolved;
+	}
+	if (pud_bad(pud))
+		return -EFAULT;
+
+	pmdp = pmd_offset(pudp, addr);
+	pmd = READ_ONCE(*pmdp);
+	if (pmd_none(pmd))
+		return -EFAULT;
+	if (pmd_leaf(pmd)) {
+		if (!pmd_present(pmd))
+			return -EFAULT;
+		pfn = pmd_pfn(pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
+		goto resolved;
+	}
+	if (pmd_bad(pmd))
+		return -EFAULT;
+
+	/* arm64 has no highmem page-table pages. Keep pte_offset_kernel() here to
+	 * avoid the failable pte_offset_map() API transition in Linux 6.5. */
+	ptep = pte_offset_kernel(pmdp, addr);
 	if (!ptep)
 		return -EFAULT;
 
 	pte = READ_ONCE(*ptep);
 	if (!pte_present(pte))
 		return -EFAULT;
+	pfn = pte_pfn(pte);
 
-#if defined(__pte_to_phys)
-	phys = (u64)__pte_to_phys(pte) | (va & ~PAGE_MASK);
-#else
-	phys = ((u64)pte_pfn(pte) << PAGE_SHIFT) | (va & ~PAGE_MASK);
-#endif
+resolved:
+	if (!pfn_valid(pfn))
+		return -EOPNOTSUPP;
 
-	if (!phys)
-		return -EFAULT;
-
-	if (!drv_section_online(phys & PHYS_MASK & PAGE_MASK))
-		return -EFAULT;
-
-	*out_phys = phys;
+	*out_phys = ((u64)pfn << PAGE_SHIFT) | offset_in_page(va);
 	return 0;
 }
 
@@ -288,8 +296,8 @@ int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void 
 	mmap_read_lock(target_mm);
 	while (remain) {
 		u64 phys, lm_va;
-		size_t off = (size_t)(target_va & 0xFFF);
-		size_t chunk = min_t(size_t, remain, 4096 - off);
+		size_t off = offset_in_page(target_va);
+		size_t chunk = min_t(size_t, remain, PAGE_SIZE - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
@@ -338,8 +346,8 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 	mmap_read_lock(target_mm);
 	while (remain) {
 		u64 phys, lm_va;
-		size_t off = (size_t)(target_va & 0xFFF);
-		size_t chunk = min_t(size_t, remain, 4096 - off);
+		size_t off = offset_in_page(target_va);
+		size_t chunk = min_t(size_t, remain, PAGE_SIZE - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
@@ -355,10 +363,6 @@ skip:
 	}
 	mmap_read_unlock(target_mm);
 	return 0;
-}
-
-static u64 drv_vmap_prot(void) {
-	return arm64_use_ng_mappings ? DRV_VMAP_PROT_KPTI_ON : DRV_VMAP_PROT_KPTI_OFF;
 }
 
 int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *local_kbuf, size_t len) {
@@ -377,7 +381,8 @@ int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *l
 		u64 phys;
 		struct page *pages[1];
 		void *mapped;
-		size_t chunk = min_t(size_t, remain, 4096 - (size_t)(target_va & 0xFFF));
+		size_t off = offset_in_page(target_va);
+		size_t chunk = min_t(size_t, remain, PAGE_SIZE - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
@@ -389,13 +394,15 @@ int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *l
 		if (!pages[0])
 			goto skip;
 
-		mapped = vmap(pages, 1, VM_MAP, __pgprot(drv_vmap_prot()));
+		/* Let the running arm64 kernel provide the correct writable mapping
+		 * attributes (including its KPTI nG policy). */
+		mapped = vmap(pages, 1, VM_MAP, PAGE_KERNEL);
 		if (!mapped)
 			goto skip;
 
 		/* See read_process_memory_linear for why the DC CIVAC ladder is gone. */
 
-		if (copy_to_user((void __user *)(uintptr_t)user_dst, (char *)mapped + (target_va & 0xFFF), chunk) != 0)
+		if (copy_to_user((void __user *)(uintptr_t)user_dst, (char *)mapped + off, chunk) != 0)
 			pr_drv_err("copy_to_user failed: %s\n", __func__);
 
 		vunmap(mapped);
@@ -424,7 +431,8 @@ int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const 
 		u64 phys;
 		struct page *pages[1];
 		void *mapped;
-		size_t chunk = min_t(size_t, remain, 4096 - (size_t)(target_va & 0xFFF));
+		size_t off = offset_in_page(target_va);
+		size_t chunk = min_t(size_t, remain, PAGE_SIZE - off);
 
 		if (vaddr_to_phys(target_mm, target_va, &phys) != 0)
 			goto skip;
@@ -436,11 +444,11 @@ int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const 
 		if (!pages[0])
 			goto skip;
 
-		mapped = vmap(pages, 1, VM_MAP, __pgprot(drv_vmap_prot()));
+		mapped = vmap(pages, 1, VM_MAP, PAGE_KERNEL);
 		if (!mapped)
 			goto skip;
 
-		(void)copy_from_user((char *)mapped + (target_va & 0xFFF), (const void __user *)(uintptr_t)user_src, chunk);
+		(void)copy_from_user((char *)mapped + off, (const void __user *)(uintptr_t)user_src, chunk);
 		vunmap(mapped);
 skip:
 		remain -= chunk;
@@ -499,8 +507,8 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 
 		while (remain) {
 			u64 phys, lm_va;
-			size_t off = (size_t)(src_va & 0xFFF);
-			size_t chunk = min_t(size_t, remain, 4096 - off);
+			size_t off = offset_in_page(src_va);
+			size_t chunk = min_t(size_t, remain, PAGE_SIZE - off);
 
 			if (vaddr_to_phys(target_mm, src_va, &phys) != 0)
 				goto next;
@@ -525,6 +533,7 @@ next:
 	return 1;
 }
 
+#if PAGE_SHIFT == 12
 /* Legacy bespoke RO patcher: walks drv.m_pgd_va, flips PTE_RDONLY/PTE_DBM
    around a byte copy, restores. Verbatim 1:1 with the original .ko. UNSAFE
    on PTE_CONT-mapped text (Android 15 / 6.6 GKI maps kernel .text with the
@@ -542,17 +551,17 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 
 	while (result < (u64)(uintptr_t)end) {
 		u64 *leaf = NULL;
-		u64 page_remain = 4096 - (result & 0xFFF);
+		u64 page_remain = PAGE_SIZE - offset_in_page(result);
 		u64 chunk = min_t(u64, page_remain, (u64)(uintptr_t)end - result);
 		unsigned int level_start;
 		unsigned int level_count = drv.m_page_level;
 		u64 saved_pte;
 		u64 i;
 
-		if (level_count == 0 || level_count > 4) {
-			/* mm_globals_init() refuses to load on unsupported levels
-			 * (see init_driver() in lifecycle.c), so this is defence in
-			 * depth — abort the whole patch rather than silently skip. */
+		if (level_count < 3 || level_count > 4) {
+			/* The module remains usable on LPA2, but this legacy fallback
+			 * only understands the 3/4-level 4 KiB format. Abort before
+			 * dereferencing the captured root on any other depth. */
 			pr_drv_err("write_ro_memory_pte_flip: unexpected page level %u; aborting\n", level_count);
 			return result;
 		}
@@ -607,7 +616,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 		*leaf = (saved_pte & DRV_PTE_RDONLY_CLEAR) | DRV_PTE_DBM_SET;
 
 		dsb(ishst);
-		asm volatile("tlbi vaae1is, %0" :: "r"(result >> 12) : "memory");
+		asm volatile("tlbi vaae1is, %0" :: "r"(result >> PAGE_SHIFT) : "memory");
 		dsb(ish);
 		isb();
 
@@ -626,13 +635,25 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 		result += chunk;
 
 		dsb(ishst);
-		asm volatile("tlbi vaae1is, %0" :: "r"(result >> 12) : "memory");
+		asm volatile("tlbi vaae1is, %0" :: "r"(result >> PAGE_SHIFT) : "memory");
 		dsb(ish);
 		isb();
 	}
 
 	return result;
 }
+#else
+/* The legacy walker hard-codes a 9-bit index per level, which is only valid
+ * for a 4 KiB arm64 granule. Keep the normal vmap/linear-map paths available
+ * on 16/64 KiB kernels, but never mutate a guessed kernel page-table entry. */
+static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
+	(void)src;
+	(void)len;
+	pr_drv_err("write_ro_memory: legacy PTE-flip unavailable for PAGE_SHIFT=%u\n",
+		   (unsigned int)PAGE_SHIFT);
+	return dst_kva;
+}
+#endif
 
 /* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync (resolved
    once at init via kallsym_lookup) — routes the write through FIX_TEXT_POKE0

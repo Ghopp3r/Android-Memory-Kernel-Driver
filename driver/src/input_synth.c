@@ -255,6 +255,7 @@ void touch_up(int slot) {
 
 int install_input_hooks(void) {
 	int ret = 0;
+	bool input_event_registered_now = false;
 
 	/* Serialise the entire lazy-init body. dispatch_ioctl calls this from process context on every ioctl in [0x12D..0x18F] and is unlocked_ioctl (no BKL), so two CPUs can race here. Without this mutex they can both observe !drv.kp_input_event_armed, both register_kprobe, and one of the registrations will silently fail (or worse, leak the kprobe slot). The mutex is fine here because we are in process context — no kprobe pre-handler reaches this path. */
 	mutex_lock(&install_lock);
@@ -291,26 +292,37 @@ int install_input_hooks(void) {
 		smp_store_release(&drv.pool, p);
 	}
 
-	/* Binary sets these flags unconditionally and only printks on failure so subsequent ioctls don't retry forever. Mirror that behaviour. */
 	if (!drv.kp_input_event_armed) {
 		drv.kp_input_event.symbol_name = "input_event";
 		drv.kp_input_event.pre_handler = input_handle_event_handler_pre;
 		ret = register_kprobe(&drv.kp_input_event);
-		if (ret < 0)
+		if (ret) {
 			pr_drv_err("Failed to register kprobe kp_input_event: %d\n", ret);
+			/* register_kprobe() resolves symbol_name into addr before some
+			 * later failures. Clear it so a retry does not present both. */
+			drv.kp_input_event.addr = NULL;
+			goto out_unlock;
+		}
 		drv.kp_input_event_armed = 1;
+		input_event_registered_now = true;
 	}
 
 	if (!drv.kp_input_inject_armed) {
 		drv.kp_input_inject_event.symbol_name = "input_inject_event";
 		drv.kp_input_inject_event.pre_handler = input_handle_event_handler2_pre;
 		ret = register_kprobe(&drv.kp_input_inject_event);
-		if (ret < 0)
+		if (ret) {
 			pr_drv_err("Failed to register kprobe kp_input_inject_event: %d\n", ret);
+			drv.kp_input_inject_event.addr = NULL;
+			if (input_event_registered_now) {
+				unregister_kprobe(&drv.kp_input_event);
+				drv.kp_input_event_armed = 0;
+				drv.kp_input_event.addr = NULL;
+			}
+			goto out_unlock;
+		}
 		drv.kp_input_inject_armed = 1;
 	}
-
-	ret = 0;
 
 out_unlock:
 	mutex_unlock(&install_lock);

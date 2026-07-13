@@ -3,7 +3,9 @@
 
 #include <linux/dcache.h>
 #include <linux/err.h>
+#include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/mutex.h>
 #include <linux/namei.h>
 #include <linux/path.h>
 #include <linux/ptrace.h>
@@ -26,8 +28,33 @@
 #include "log.h"
 #include "sensor.h"
 
-/* event_type == 1 selects gyro layout (X/Y at +0x18); else accel at +0x10. */
-int event_type;
+/* x0 is const Event&, not sensors_event_t*. HIDL uses an untagged payload at
+ * +0x10; the fixed-size AIDL union stores its tag at +0x10 and its aligned
+ * value at +0x18. Both Event forms keep SensorType at +0x0c. */
+struct sensor_abi_layout {
+	u8 type_off;
+	u8 data_off;
+	u8 tag_off;
+	u32 tag_value;
+	bool has_tag;
+};
+
+static const struct sensor_abi_layout layouts[DRV_SENSOR_LAYOUT_COUNT] = {
+	[DRV_SENSOR_LAYOUT_HIDL_V1] = {
+		.type_off = 12,
+		.data_off = 16,
+		.has_tag = false,
+	},
+	[DRV_SENSOR_LAYOUT_AIDL_V1] = {
+		.type_off = 12,
+		.data_off = 24,
+		.tag_off = 16,
+		.tag_value = 0, /* EventPayload::Tag::vec3 */
+		.has_tag = true,
+	},
+};
+
+static int active_layout_profile = -1;
 
 u8 gyro_enable;
 u32 gyro_x;
@@ -287,34 +314,58 @@ u32 fadd(u32 a, u32 b) {
 }
 
 int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
-	unsigned long data_off;
+	const struct sensor_abi_layout *layout;
+	int layout_profile;
 	unsigned long user_ptr;
-	u32 num_axes = 0;
+	u32 sensor_type = 0;
+	u32 payload_tag = 0;
 	u32 xy[2] = { 0, 0 };
 	u32 new_y;
 
 	(void)self;
 
-	/* Gyro layout has an extra 8-byte leading field. */
-	data_off = (event_type == 1) ? 24UL : 16UL;
-
 	if (gyro_enable == 0)
 		return 0;
 	if (gyro_x == 0 && gyro_y == 0)
 		return 0;
+	if (!regs)
+		return 0;
+
+	layout_profile = READ_ONCE(active_layout_profile);
+	if (layout_profile < 0 || layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
+		return 0;
+	layout = &layouts[layout_profile];
 
 	/* On ARM64 pt_regs starts with the GPR array; regs[0] == x0. */
 	user_ptr = regs->regs[0];
+	if (!user_ptr)
+		return 0;
 
-	/* numAxes lives at +0x0C of the user-mode sensors_event_t. */
-	if (copy_from_user(&num_axes, (void __user *)(user_ptr + 12), 4) != 0) {
+	/* SensorType::GYROSCOPE == 4 in both HIDL V1.0 and sensors AIDL. */
+	if (copy_from_user(&sensor_type,
+			   (void __user *)(user_ptr + layout->type_off),
+			   sizeof(sensor_type)) != 0) {
 		pr_drv_err("sensor_hook copy_from_user failed\n");
 		return 0;
 	}
-	if (num_axes != 4)
+	if (sensor_type != 4)
 		return 0;
 
-	if (copy_from_user(xy, (void __user *)(user_ptr + data_off), 8) != 0) {
+	/* The AIDL EventPayload is a fixed tagged union. Do not interpret another
+	 * active member as Vec3 even when a malformed Event claims gyro type. */
+	if (layout->has_tag) {
+		if (copy_from_user(&payload_tag,
+				   (void __user *)(user_ptr + layout->tag_off),
+				   sizeof(payload_tag)) != 0) {
+			pr_drv_err("sensor_hook copy_from_user failed\n");
+			return 0;
+		}
+		if (payload_tag != layout->tag_value)
+			return 0;
+	}
+
+	if (copy_from_user(xy, (void __user *)(user_ptr + layout->data_off),
+			   sizeof(xy)) != 0) {
 		pr_drv_err("sensor_hook copy_from_user failed\n");
 		return 0;
 	}
@@ -323,7 +374,8 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 	new_y = fadd(xy[1], gyro_y);
 	xy[1] = new_y;
 
-	if (copy_to_user((void __user *)(user_ptr + data_off), xy, 8) != 0) {
+	if (copy_to_user((void __user *)(user_ptr + layout->data_off), xy,
+			 sizeof(xy)) != 0) {
 		pr_drv_err("sensor_hook copy_to_user failed\n");
 		return 0;
 	}
@@ -340,18 +392,26 @@ static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs)
  * the per-uprobe list and the re-add path waits on a lock the first caller
  * still holds. Gate on first-success to keep userspace re-bind safe. */
 static bool uprobe_armed;
+static unsigned long armed_probe_offset;
+static int armed_layout_profile = -1;
+static DEFINE_MUTEX(sensor_bind_lock);
 
-int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
+int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 	struct path path;
 	struct dentry *dentry;
 	struct inode *inode;
 	int ret;
 
-	/* Stash the user-chosen layout selector in the module global. */
-	event_type = new_event_type;
+	if (layout_profile < 0 || layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
+		return -EINVAL;
 
-	if (uprobe_armed)
-		return 0;
+	mutex_lock(&sensor_bind_lock);
+
+	if (uprobe_armed) {
+		ret = (armed_probe_offset == probe_offset &&
+		       armed_layout_profile == layout_profile) ? 0 : -EBUSY;
+		goto out_unlock;
+	}
 
 	path.mnt = NULL;
 	path.dentry = NULL;
@@ -359,7 +419,7 @@ int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 	ret = kern_path(SENSOR_TARGET_SO, LOOKUP_FOLLOW, &path);
 	if (ret != 0) {
 		pr_drv_err("kern_path failed: %d\n", ret);
-		return ret;
+		goto out_unlock;
 	}
 
 	dentry = path.dentry;
@@ -382,9 +442,19 @@ int sensor_hook_init(unsigned long probe_offset, int new_event_type) {
 	ret = drv_uprobe_register(inode, probe_offset, &uc);
 	if (ret != 0)
 		pr_drv_err("uprobe_register failed: %d\n", ret);
-	else
+	else {
+		/* Publish the layout only after the registration succeeds. A handler
+		 * racing in the tiny interval before this store safely sees -1 and
+		 * leaves that event untouched. */
+		WRITE_ONCE(active_layout_profile, layout_profile);
+		armed_probe_offset = probe_offset;
+		armed_layout_profile = layout_profile;
 		uprobe_armed = true;
+	}
 
 	path_put(&path);
+
+out_unlock:
+	mutex_unlock(&sensor_bind_lock);
 	return ret;
 }

@@ -9,7 +9,9 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 
-/* Walks @mm->pgd using m_page_level levels (derived from TCR_EL1). Honours block (hugepage) entries at any level. Page-offset bits merged into result so callers may pass an unaligned VA. */
+/* Walks @mm->pgd with the kernel's folded-level pgtable helpers. Honours PUD,
+ * PMD and PTE leaves and merges the configured PAGE_SIZE offset into the PA.
+ * Caller holds mmap_read_lock(mm). */
 int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys);
 
 /* Linear-map (phys_to_virt) variants; clean+invalidate dcache around the access via FlushDCache.dcache_line_size. */
@@ -26,15 +28,16 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 
 /* Resolve aarch64_insn_patch_text_nosync and get_cmdline via kallsyms. Called
    once from lifecycle.c init_driver() AFTER kallsym_init(). Missing symbols
-   are non-fatal: text writes retain their legacy fallback, while package
-   lookup reports -EOPNOTSUPP when get_cmdline is unavailable. */
+   are non-fatal: text writes retain their locally gated legacy fallback where
+   supported, while package lookup reports -EOPNOTSUPP when get_cmdline is
+   unavailable. */
 int memory_init(void);
 
 /* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync via kallsym
    (FIX_TEXT_POKE0, non-CONT fixmap slot — architecturally safe on Android 15
    / 6.6 GKI which maps .text with PTE_CONT). Fallback: legacy bespoke PGD
    walk + AP[2]/DBM flip + per-VA TLBI (only safe when target VA is NOT in a
-   PTE_CONT block, e.g. byte-granular .rodata writes on non-hardened kernels).
+   PTE_CONT block, only built for PAGE_SHIFT=12 and limited to 3/4 levels).
    In-tree callers (hook_install / hook_remove) always pass 4-byte aligned
    dst + src + len, so the fast path is taken in production. NOT
    stop_machine'd — caller ensures target VA is quiescent. */

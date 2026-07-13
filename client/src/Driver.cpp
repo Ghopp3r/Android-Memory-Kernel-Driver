@@ -211,27 +211,42 @@ bool CDriver::Touch::up(int slot) {
     return m_d.doIoctlRaw(DRV_CMD_TOUCH_UP, &tr) >= 0;
 }
 
-// sensor_hook_init is idempotent kernel-side, but isArmed() flips on first
-// success so the UI can disable gyro features when libsensorservice has no
-// matching symbol.
-bool CDriver::Gyro::bind(uint64_t probeOffset, int eventType) {
+// Repeating the same offset/layout bind is idempotent kernel-side; a different
+// bind is rejected. isArmed() flips on the first successful registration so
+// the UI can disable gyro features when libsensorservice has no matching symbol.
+bool CDriver::Gyro::bind(uint64_t probeOffset, int layoutProfile) {
     drv_ioctl_req req{};
     req.pid = 100;
     req.addr = probeOffset;
-    req.size = static_cast<uint64_t>(eventType);
+    req.size = static_cast<uint64_t>(layoutProfile);
     if (m_d.doIoctl(DRV_CMD_SENSOR_BIND, &req) < 0) return false;
     m_armed = true;
     return true;
 }
 
 bool CDriver::Gyro::bindAuto() {
-    static const char* kCandidates[] = {
-        "_ZN7android8hardware7sensors14implementation20convertToSensorEventERKN4aidl7android8hardware7sensors5EventEP15sensors_event_t",
-        "_ZN7android8hardware7sensors4V1_014implementation20convertToSensorEventERKNS2_5EventEP15sensors_event_t",
+    struct Candidate {
+        const char* symbol;
+        uint32_t layout;
     };
-    const char* picked = nullptr;
-    uint64_t off = GetSymbolOffset("/system/lib64/libsensorservice.so", kCandidates, sizeof(kCandidates) / sizeof(*kCandidates), &picked);
-    return off && bind(off, 1);
+    static const Candidate kCandidates[] = {
+        {
+            "_ZN7android8hardware7sensors14implementation20convertToSensorEventERKN4aidl7android8hardware7sensors5EventEP15sensors_event_t",
+            DRV_SENSOR_LAYOUT_AIDL_V1,
+        },
+        {
+            "_ZN7android8hardware7sensors4V1_014implementation20convertToSensorEventERKNS2_5EventEP15sensors_event_t",
+            DRV_SENSOR_LAYOUT_HIDL_V1,
+        },
+    };
+
+    for (const Candidate& candidate : kCandidates) {
+        const char* symbol = candidate.symbol;
+        uint64_t off = GetSymbolOffset("/system/lib64/libsensorservice.so", &symbol, 1, nullptr);
+        if (off)
+            return bind(off, candidate.layout);
+    }
+    return false;
 }
 
 bool CDriver::Gyro::write(float dx, float dy, bool enable) {
