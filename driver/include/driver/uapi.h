@@ -30,6 +30,10 @@
 #define DRIVER_IOCTL_PING 0x9FBF1u
 #define DRIVER_IOCTL_HELLO 0x1E240u
 
+/* Maximum payload accepted by one process-memory ioctl. Userspace write
+ * wrappers split larger buffers into requests of at most this size. */
+#define DRV_MEM_CMD_MAX_SIZE (16ULL << 20)
+
 /* ABI layout of the Event reference passed in x0 to the selected
  * convertToSensorEvent(const Event&, sensors_event_t*) implementation.
  * These values are carried in drv_ioctl_req.size for DRV_CMD_SENSOR_BIND;

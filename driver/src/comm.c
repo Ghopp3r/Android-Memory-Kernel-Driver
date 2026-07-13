@@ -97,9 +97,6 @@ static int drv_close_fd(unsigned int fd) {
 #endif
 }
 
-/* Sanity cap on attacker-controlled req.size for the bulk memory cmd transfers. Userspace clients chunk transfers; nothing legitimate asks for >16 MiB in a single ioctl. Bounding the per-ioctl byte count also caps the mmap_read_lock hold time on the target. */
-#define DRV_MEM_CMD_MAX_SIZE (16UL << 20)
-
 #if DRV_KGSL_ENABLED
 /* Plausibility check for a pointer pulled out of a downstream vendor struct
  * via a hard-coded offset. NULL passes (an empty rbtree holder is valid).

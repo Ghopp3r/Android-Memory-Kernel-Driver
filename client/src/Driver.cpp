@@ -102,13 +102,7 @@ bool CDriver::Memory::read(uint64_t addr, void* out, size_t len) {
 }
 
 bool CDriver::Memory::write(uint64_t addr, const void* in, size_t len) {
-    drv_ioctl_req req{};
-    req.pid = static_cast<uint32_t>(m_d.m_targetPid);
-    req.addr = addr;
-    req.buf = reinterpret_cast<uint64_t>(in);
-    req.size = len;
-    if (m_d.doIoctl(DRV_CMD_WRITE_MEM_LINEAR, &req) < 0) return false;
-    return req.size == len;
+    return writeChunked(DRV_CMD_WRITE_MEM_LINEAR, addr, in, len);
 }
 
 bool CDriver::Memory::readVmap(uint64_t addr, void* out, size_t len) {
@@ -122,13 +116,43 @@ bool CDriver::Memory::readVmap(uint64_t addr, void* out, size_t len) {
 }
 
 bool CDriver::Memory::writeVmap(uint64_t addr, const void* in, size_t len) {
-    drv_ioctl_req req{};
-    req.pid = static_cast<uint32_t>(m_d.m_targetPid);
-    req.addr = addr;
-    req.buf = reinterpret_cast<uint64_t>(in);
-    req.size = len;
-    if (m_d.doIoctl(DRV_CMD_WRITE_MEM_VMAP, &req) < 0) return false;
-    return req.size == len;
+    return writeChunked(DRV_CMD_WRITE_MEM_VMAP, addr, in, len);
+}
+
+bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr,
+                                   const void* in, size_t len) {
+    uint64_t source = reinterpret_cast<uint64_t>(in);
+    size_t remain = len;
+
+    if (len != 0 && source == 0) {
+        errno = EFAULT;
+        return false;
+    }
+    if (static_cast<uint64_t>(len) > UINT64_MAX - addr ||
+        static_cast<uint64_t>(len) > UINT64_MAX - source) {
+        errno = EOVERFLOW;
+        return false;
+    }
+
+    do {
+        const size_t chunk = remain > DRV_MEM_CMD_MAX_SIZE
+                                 ? static_cast<size_t>(DRV_MEM_CMD_MAX_SIZE)
+                                 : remain;
+        drv_ioctl_req req{};
+        req.pid = static_cast<uint32_t>(m_d.m_targetPid);
+        req.addr = addr;
+        req.buf = source;
+        req.size = chunk;
+
+        if (m_d.doIoctl(cmd, &req) < 0 || req.size != chunk)
+            return false;
+
+        remain -= chunk;
+        addr += chunk;
+        source += chunk;
+    } while (remain != 0);
+
+    return true;
 }
 
 std::optional<uint64_t> CDriver::Memory::getModuleBase(const std::string& name) {

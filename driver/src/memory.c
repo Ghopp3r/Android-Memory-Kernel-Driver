@@ -335,9 +335,18 @@ skip:
 int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, const void *local_kbuf, size_t len) {
 	u64 user_src;
 	size_t remain = len;
+	bool copy_failed = false;
 
-	if (!target_mm || !local_kbuf || len == 0)
+	if (!target_mm)
+		return -EINVAL;
+	if (len == 0)
 		return 0;
+	if (!local_kbuf)
+		return -EFAULT;
+	target_va = (u64)untagged_addr(target_va);
+	if (target_va >= (u64)target_mm->task_size ||
+	    (u64)len > (u64)target_mm->task_size - target_va)
+		return -EFAULT;
 
 	user_src = (u64)(uintptr_t)local_kbuf;
 	if (!drv_user_ptr_in_range(user_src, len))
@@ -354,8 +363,12 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 
 		lm_va = drv_lm_va_from_phys(phys);
 
-		(void)copy_from_user((void *)(uintptr_t)lm_va + off,
-		                     (const void __user *)(uintptr_t)user_src, chunk);
+		if (copy_from_user((void *)(uintptr_t)lm_va + off,
+		                   (const void __user *)(uintptr_t)user_src, chunk) != 0 &&
+		    !copy_failed) {
+			pr_drv_err("copy_from_user failed: %s\n", __func__);
+			copy_failed = true;
+		}
 skip:
 		remain -= chunk;
 		target_va += chunk;
@@ -418,9 +431,18 @@ skip:
 int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const void *local_kbuf, size_t len) {
 	u64 user_src;
 	size_t remain = len;
+	bool copy_failed = false;
 
-	if (!target_mm || !local_kbuf || len == 0)
+	if (!target_mm)
+		return -EINVAL;
+	if (len == 0)
 		return 0;
+	if (!local_kbuf)
+		return -EFAULT;
+	target_va = (u64)untagged_addr(target_va);
+	if (target_va >= (u64)target_mm->task_size ||
+	    (u64)len > (u64)target_mm->task_size - target_va)
+		return -EFAULT;
 
 	user_src = (u64)(uintptr_t)local_kbuf;
 	if (!drv_user_ptr_in_range(user_src, len))
@@ -448,7 +470,12 @@ int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const 
 		if (!mapped)
 			goto skip;
 
-		(void)copy_from_user((char *)mapped + off, (const void __user *)(uintptr_t)user_src, chunk);
+		if (copy_from_user((char *)mapped + off,
+		                   (const void __user *)(uintptr_t)user_src, chunk) != 0 &&
+		    !copy_failed) {
+			pr_drv_err("copy_from_user failed: %s\n", __func__);
+			copy_failed = true;
+		}
 		vunmap(mapped);
 skip:
 		remain -= chunk;
@@ -632,12 +659,12 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 
 		*leaf = saved_pte;
 
-		result += chunk;
-
 		dsb(ishst);
 		asm volatile("tlbi vaae1is, %0" :: "r"(result >> PAGE_SHIFT) : "memory");
 		dsb(ish);
 		isb();
+
+		result += chunk;
 	}
 
 	return result;

@@ -49,6 +49,7 @@ public:
         bool writeVmap(uint64_t addr, const T& v) { return writeVmap(addr, &v, sizeof(T)); }
 
     private:
+        bool writeChunked(unsigned int cmd, uint64_t addr, const void* in, size_t len);
         CDriver& m_d;
     };
 

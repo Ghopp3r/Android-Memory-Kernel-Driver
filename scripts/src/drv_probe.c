@@ -424,26 +424,47 @@ static void test_read_mem(struct helper_state *h, unsigned int cmd, const char *
 
 static void test_write_mem(struct helper_state *h, unsigned int cmd, const char *label) {
 	uint8_t buf[256];
+	long page_size = sysconf(_SC_PAGESIZE);
+	uint64_t write_addr = h->known_addr + 1024;
 	for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = (uint8_t)(0xA5 ^ i);
+	if (page_size > (long)(sizeof(buf) / 2) &&
+	    (uint64_t)page_size + sizeof(buf) / 2 <= h->known_size)
+		write_addr = h->known_addr + (uint64_t)page_size - sizeof(buf) / 2;
 
-	struct drv_ioctl_req r = mkreq(h->pid, h->known_addr + 1024,
+	struct drv_ioctl_req r = mkreq(h->pid, write_addr,
 	                               (uintptr_t)buf, sizeof(buf), 0);
 	double ms;
 	int rc = doctl(cmd, &r, &ms);
-	bool pass = (rc == 0);
+	bool pass = (rc == 0 && r.size == sizeof(buf));
 	if (pass) {
 		/* Read back via the matching READ cmd to confirm. */
 		unsigned int read_cmd = (cmd == DRV_CMD_WRITE_MEM_LINEAR)
-		                            ? DRV_CMD_READ_MEM_LINEAR
-		                            : DRV_CMD_READ_MEM_VMAP;
+			                            ? DRV_CMD_READ_MEM_LINEAR
+			                            : DRV_CMD_READ_MEM_VMAP;
 		uint8_t back[256] = {0};
-		struct drv_ioctl_req r2 = mkreq(h->pid, h->known_addr + 1024,
+		struct drv_ioctl_req r2 = mkreq(h->pid, write_addr,
 		                                (uintptr_t)back, sizeof(back), 0);
 		(void)doctl(read_cmd, &r2, NULL);
 		if (memcmp(buf, back, sizeof(buf)) != 0) pass = false;
 	}
-	log_result(label, pass, ms, "rc=%d size_back=%lu",
-	           rc, (unsigned long)r.size);
+
+	/* Keep the read-like raw ioctl contract (rc==0, size_back==0) while
+	 * proving that an overflowing target range is rejected before walking. */
+	struct drv_ioctl_req overflow = mkreq(h->pid, UINT64_MAX - 7,
+	                                         (uintptr_t)buf, 16, 0);
+	int overflow_rc = doctl(cmd, &overflow, NULL);
+	if (overflow_rc != 0 || overflow.size != 0) pass = false;
+
+	/* A NULL source with a non-zero length must not be reported as written. */
+	struct drv_ioctl_req null_src = mkreq(h->pid, write_addr, 0, 16, 0);
+	int null_rc = doctl(cmd, &null_src, NULL);
+	if (null_rc != 0 || null_src.size != 0) pass = false;
+
+	log_result(label, pass, ms,
+	           "rc=%d size_back=%lu overflow=(%d,%lu) null=(%d,%lu)",
+	           rc, (unsigned long)r.size,
+	           overflow_rc, (unsigned long)overflow.size,
+	           null_rc, (unsigned long)null_src.size);
 }
 
 static void test_multi_read(struct helper_state *h) {
