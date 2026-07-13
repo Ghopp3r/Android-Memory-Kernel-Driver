@@ -80,13 +80,14 @@ ccflags-y += -DKCFG_DRIVER_NAME='"$(DRIVER_NAME)"'
 ccflags-y += -DKCFG_ANON_INODE_NAME='$(ANON_INODE_NAME)'
 ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
 
+# Module self-concealment is selected in lifecycle.c from LINUX_VERSION_CODE:
+# enabled for the supported 5.10-6.6 kernels and compiled out for 6.12+.
+
 # -----------------------------------------------------------------------------
 # Optional feature gates (off by default — uncomment in your local Kbuild or
 # pass on the make command line as `ccflags-y+=-D<FLAG>` to enable).
 # These mirror the gates used by android-wuwa.
 # -----------------------------------------------------------------------------
-# KCFG_HIDE_SELF_MODULE is deliberately unsupported. An external module must
-# not mutate loader-owned module lists or kobjects.
 # ccflags-y += -DKCFG_BUILD_NO_CFI         # patch CFI helpers with RET
 # ccflags-y += -DKCFG_BUILD_PTE_MAPPING    # PTE-walk write-RO path
 # ccflags-y += -DKCFG_BUILD_HIDE_SIGNAL    # signal-bypass hook

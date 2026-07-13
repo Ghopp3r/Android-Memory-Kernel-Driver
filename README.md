@@ -3,9 +3,9 @@
 Android ARM64 loadable kernel module — 1:1 reverse-engineered
 reconstruction of a real privileged R/W + input-injection + sensor-spoof
 + page-fault-harvest driver. Speaks to userspace over an `ioctl()`
-channel obtained via a magic `reboot()` handshake — no `/dev` node. The
-module remains registered with the normal kernel module lifecycle; altering
-loader-owned module lists or kobjects is deliberately unsupported.
+channel obtained via a magic `reboot()` handshake — no `/dev` node. Builds
+for kernels 5.10 through 6.6 retain the original module-list/sysfs concealment;
+the Android 16 / 6.12 build stays registered with the normal module lifecycle.
 
 Field-based source against GKI kernel headers — one source tree builds
 seven KMI variants via the Docker DDK image. Code uses `task->mm` /
@@ -14,15 +14,15 @@ layout is the compiler's problem at build time.
 
 ## Build matrix
 
-| KMI                | Kernel | Android | CI |
-| ------------------ | ------ | ------- | -- |
-| `android12-5.10`   | 5.10   | 12      | ✅ |
-| `android13-5.10`   | 5.10   | 13      | ✅ |
-| `android13-5.15`   | 5.15   | 13      | ✅ |
-| `android14-5.15`   | 5.15   | 14      | ✅ |
-| `android14-6.1`    | 6.1    | 14      | ✅ |
-| `android15-6.6`    | 6.6    | 15      | ✅ (device-tested) |
-| `android16-6.12`   | 6.12   | 16      | ✅ |
+| KMI                | Kernel | Android | Module visibility | CI |
+| ------------------ | ------ | ------- | ----------------- | -- |
+| `android12-5.10`   | 5.10   | 12      | hidden            | ✅ |
+| `android13-5.10`   | 5.10   | 13      | hidden            | ✅ |
+| `android13-5.15`   | 5.15   | 13      | hidden            | ✅ |
+| `android14-5.15`   | 5.15   | 14      | hidden            | ✅ |
+| `android14-6.1`    | 6.1    | 14      | hidden            | ✅ |
+| `android15-6.6`    | 6.6    | 15      | hidden            | ✅ (device-tested) |
+| `android16-6.12`   | 6.12   | 16      | visible           | ✅ |
 
 Runtime device-coverage is currently the `android15-6.6` leg
 (NP05J / Vivo / kernel `6.6.56 android15-8 GKI` / KernelSU root). The
@@ -180,7 +180,7 @@ driver/
     uapi.h             shared kernel<->userspace ioctl surface
     types.h            internal driver state types
   src/
-    lifecycle.c        module initialization (normal module-core lifecycle)
+    lifecycle.c        module initialization + self-conceal on kernels < 6.12
     comm.c             reboot() handshake (kprobe on __arm64_sys_reboot) +
                        dispatch_ioctl router
     memory.c           process pagewalk + read/write_process_memory_linear,
@@ -234,12 +234,14 @@ make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"'
 
 ## Device caveats
 
-**Module lifecycle.** The module remains visible in `/proc/modules` and
-`/sys/module` and intentionally has no unload entry point. Lazy kprobes,
-uprobes, and task-work callbacks can retain driver pointers after an ioctl, so
-reboot the device before replacing a loaded artifact. Self-unlinking an
-external module from module-core lists or deleting its `kobject` is unsafe and
-is not supported.
+**Module lifecycle.** On kernels 5.10 through 6.6 the legacy concealment path
+removes the module from `/proc/modules` and `/sys/module` after initialization.
+It directly mutates loader-owned lists and the module kobject, retaining the
+same race and maintenance risk as the reconstructed driver. On 6.12+ that code
+is compiled out and the module remains visible. Every build intentionally has
+no unload entry point: lazy kprobes, uprobes, and task-work callbacks can retain
+driver pointers after an ioctl, so reboot the device before replacing a loaded
+artifact.
 
 **Vendor RKP / kernel-text integrity protection.** On the NP05J target
 (Vivo, kernel `6.6.56 android15-8 GKI`) any modification of
