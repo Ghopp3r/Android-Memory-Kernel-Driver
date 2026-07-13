@@ -85,7 +85,8 @@ ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
 # pass on the make command line as `ccflags-y+=-D<FLAG>` to enable).
 # These mirror the gates used by android-wuwa.
 # -----------------------------------------------------------------------------
-# ccflags-y += -DKCFG_HIDE_SELF_MODULE     # active list_del / kobject_del
+# KCFG_HIDE_SELF_MODULE is deliberately unsupported. An external module must
+# not mutate loader-owned module lists or kobjects.
 # ccflags-y += -DKCFG_BUILD_NO_CFI         # patch CFI helpers with RET
 # ccflags-y += -DKCFG_BUILD_PTE_MAPPING    # PTE-walk write-RO path
 # ccflags-y += -DKCFG_BUILD_HIDE_SIGNAL    # signal-bypass hook

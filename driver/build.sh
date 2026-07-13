@@ -11,7 +11,7 @@
 #
 # Examples:
 #   ./build.sh android15-6.6
-#   ./build.sh android14-6.1 20251016
+#   ./build.sh android14-6.1 20251104
 #   ./build.sh android13-5.10 20250825
 #
 #   # Build all matrix KMIs in sequence:
@@ -31,11 +31,15 @@ set -euo pipefail
 # Defaults & arg parsing
 # ---------------------------------------------------------------------------
 DEFAULT_KMI="android15-6.6"
-DEFAULT_RELEASE="20251016"
+DEFAULT_RELEASE="20251104"
 DRIVER_NAME="${DRIVER_NAME:-my-driver}"
 
 KMI="${1:-$DEFAULT_KMI}"
 RELEASE="${2:-$DEFAULT_RELEASE}"
+REQUIRE_6_12_KCFI=0
+if [[ "${KMI}" == "android16-6.12" ]]; then
+    REQUIRE_6_12_KCFI=1
+fi
 
 if [[ "${KMI}" == "-h" || "${KMI}" == "--help" ]]; then
     sed -n '2,30p' "$0"
@@ -82,8 +86,22 @@ docker run --rm \
     -v "${SCRIPT_DIR}:/work" \
     -w /work \
     -e "DRIVER_NAME=${DRIVER_NAME}" \
+    -e "REQUIRE_6_12_KCFI=${REQUIRE_6_12_KCFI}" \
     "${IMAGE}" \
-    bash -c 'make -j"$(nproc)"'
+    bash -c '
+        set -euo pipefail
+        if [[ "${REQUIRE_6_12_KCFI}" == "1" ]]; then
+            config="${KERNEL_SRC:?}/.config"
+            test -r "${config}"
+            grep -Fxq "CONFIG_CFI_CLANG=y" "${config}"
+            grep -Fxq "CONFIG_CFI_ICALL_NORMALIZE_INTEGERS=y" "${config}"
+        fi
+        make -j"$(nproc)"
+        if [[ "${REQUIRE_6_12_KCFI}" == "1" ]]; then
+            grep -R -F -q --include="*.cmd" -- \
+                "-fsanitize-cfi-icall-experimental-normalize-integers" .
+        fi
+    '
 MAKE_RC=$?
 set -e
 

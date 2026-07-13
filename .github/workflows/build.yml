@@ -24,7 +24,9 @@ on:
       ddk_release:
         description: 'ghcr.io/ylarod/ddk image tag suffix (release date)'
         required: false
-        default: '20251016'
+        # android16-6.12 requires normalized KCFI type IDs. 20251104 is the
+        # first DDK release that configures them correctly.
+        default: '20251104'
         type: string
 
 jobs:
@@ -93,7 +95,7 @@ jobs:
           - android16-6.12
 
     container:
-      image: ghcr.io/ylarod/ddk:${{ matrix.kmi }}-${{ inputs.ddk_release || '20251016' }}
+      image: ghcr.io/ylarod/ddk:${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}
       options: --privileged
 
     env:
@@ -107,12 +109,24 @@ jobs:
         working-directory: driver
         run: |
           echo "=== KMI:           ${{ matrix.kmi }}"
-          echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251016' }}"
+          echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}"
           echo "=== KERNEL_SRC:    $KERNEL_SRC"
           echo "=== DRIVER_NAME:   $DRIVER_NAME"
           uname -a
           which clang || true
           clang --version || true
+
+      # Android 16 / 6.12 enables strict KCFI. A module built without integer
+      # normalization can panic before module_init() executes.
+      - name: Verify Android 16 / 6.12 KCFI configuration
+        if: matrix.kmi == 'android16-6.12'
+        working-directory: driver
+        run: |
+          set -eux
+          config="${KERNEL_SRC}/.config"
+          test -r "$config"
+          grep -Fxq 'CONFIG_CFI_CLANG=y' "$config"
+          grep -Fxq 'CONFIG_CFI_ICALL_NORMALIZE_INTEGERS=y' "$config"
 
       - name: Build ${{ env.DRIVER_NAME }}.ko
         working-directory: driver
@@ -120,6 +134,16 @@ jobs:
           set -eux
           make -j"$(nproc)"
           ls -la "${DRIVER_NAME}.ko"
+
+      # Confirm that the normalized KCFI setting reached the external-module
+      # compiler command rather than merely existing in the kernel .config.
+      - name: Verify Android 16 / 6.12 KCFI compiler flags
+        if: matrix.kmi == 'android16-6.12'
+        working-directory: driver
+        run: |
+          set -eux
+          grep -R -F -q --include='*.cmd' -- \
+            '-fsanitize-cfi-icall-experimental-normalize-integers' .
 
       - name: Stage artefact (rename per-KMI)
         working-directory: driver

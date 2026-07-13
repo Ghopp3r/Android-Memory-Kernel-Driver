@@ -3,8 +3,9 @@
 Android ARM64 loadable kernel module — 1:1 reverse-engineered
 reconstruction of a real privileged R/W + input-injection + sensor-spoof
 + page-fault-harvest driver. Speaks to userspace over an `ioctl()`
-channel obtained via a magic `reboot()` handshake — no `/dev` node, no
-`lsmod` visibility, no module-list entry.
+channel obtained via a magic `reboot()` handshake — no `/dev` node. The
+module remains registered with the normal kernel module lifecycle; altering
+loader-owned module lists or kobjects is deliberately unsupported.
 
 Field-based source against GKI kernel headers — one source tree builds
 seven KMI variants via the Docker DDK image. Code uses `task->mm` /
@@ -39,8 +40,14 @@ Equivalent one-liner:
 
 ```bash
 docker run --rm -v "$PWD/driver:/work" -w /work \
-    ghcr.io/ylarod/ddk:android15-6.6-20251016 make
+    ghcr.io/ylarod/ddk:android15-6.6-20251104 make
 ```
+
+The default DDK release is `20251104`. It is the first release that builds
+`android16-6.12` external modules with normalized KCFI integer type IDs; do
+not use `20251016` for that KMI. CI and `driver/build.sh` verify both the
+kernel configuration and the compiler command before publishing a 6.12
+artifact.
 
 ## Quick start — GitHub Actions
 
@@ -173,7 +180,7 @@ driver/
     uapi.h             shared kernel<->userspace ioctl surface
     types.h            internal driver state types
   src/
-    lifecycle.c        module init/exit + self-conceal (list_del + LIST_POISON)
+    lifecycle.c        module initialization (normal module-core lifecycle)
     comm.c             reboot() handshake (kprobe on __arm64_sys_reboot) +
                        dispatch_ioctl router
     memory.c           process pagewalk + read/write_process_memory_linear,
@@ -226,6 +233,13 @@ make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"'
 | `REBOOT_MAGIC` | `0x123456u` | sentinel magic the reboot() handshake matches in `inner_regs[0]/[1]` |
 
 ## Device caveats
+
+**Module lifecycle.** The module remains visible in `/proc/modules` and
+`/sys/module` and intentionally has no unload entry point. Lazy kprobes,
+uprobes, and task-work callbacks can retain driver pointers after an ioctl, so
+reboot the device before replacing a loaded artifact. Self-unlinking an
+external module from module-core lists or deleting its `kobject` is unsafe and
+is not supported.
 
 **Vendor RKP / kernel-text integrity protection.** On the NP05J target
 (Vivo, kernel `6.6.56 android15-8 GKI`) any modification of

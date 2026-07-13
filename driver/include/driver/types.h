@@ -61,7 +61,7 @@ struct hook_slot {
 	__u8  _pad[0xE8 - 0xC8 - 8];
 };
 
-/* drv_state aggregates every cross-subsystem global the original binary keeps as bare BSS variables. cleanup_module deliberately does NOT unwind any of this — the module is single-shot by design. / */
+/* drv_state aggregates every cross-subsystem global the original binary keeps as bare BSS variables. The module is single-shot: lazy hooks and callbacks can retain pointers into this state, so it intentionally has no unload entry point. */
 struct drv_state {
 	struct evpool       *pool;
 

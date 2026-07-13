@@ -76,10 +76,11 @@ echo "=== pushing artefacts"
 "$ADB" shell 'su -c "chmod 755 /data/local/tmp/test/drv_probe; rm -f /data/local/tmp/test/results.json /data/local/tmp/test/timing.csv"'
 
 # ---------------------------------------------------------------------------
-# 3) insmod (idempotent — module self-conceals so a previous load may be invisible)
+# 3) insmod. The module stays registered and is intentionally non-unloadable;
+# reboot the device before loading a replacement artifact.
 # ---------------------------------------------------------------------------
 echo "=== insmod"
-"$ADB" shell 'su -c "dmesg -C 2>/dev/null; insmod /data/local/tmp/test/my-driver-android15-6.6.ko; echo INSMOD_RC=$?"'
+"$ADB" shell 'su -c "dmesg -C 2>/dev/null || true; insmod /data/local/tmp/test/my-driver-android15-6.6.ko"'
 
 # ---------------------------------------------------------------------------
 # 4) run drv_probe
