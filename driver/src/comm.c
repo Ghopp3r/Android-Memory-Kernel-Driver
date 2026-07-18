@@ -33,7 +33,7 @@
 #define __nocfi
 #endif
 
-#if KCFG_HIDE_KGSL && LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+#if KCFG_HIDE_KGSL
 #define DRV_KGSL_ENABLED 1
 #else
 #define DRV_KGSL_ENABLED 0
@@ -96,18 +96,6 @@ static int drv_close_fd(unsigned int fd) {
 	return __close_fd(current->files, fd);
 #endif
 }
-
-#if DRV_KGSL_ENABLED
-/* Plausibility check for a pointer pulled out of a downstream vendor struct
- * via a hard-coded offset. NULL passes (an empty rbtree holder is valid).
- * Non-NULL must have bit 63 set (ARM64 kernel VAs) AND be pointer-aligned.
- * Used to bail out before dereferencing stale KGSL holder offsets — see
- * DRV_CMD_HIDE_KGSL case in dispatch. */
-static inline bool drv_looks_like_kptr_or_null(const void *p) {
-	uintptr_t v = (uintptr_t)p;
-	return v == 0 || (((v >> 63) & 1u) && IS_ALIGNED(v, sizeof(void *)));
-}
-#endif
 
 /* .owner=THIS_MODULE pins module text for as long as any client holds the fd. */
 const struct file_operations inofile_fops = {
@@ -391,43 +379,19 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		if (task)
 			result = process_get_tls(task);
 		break;
-	case DRV_CMD_HIDE_KGSL: {
+	case DRV_CMD_HIDE_KGSL:
+		/* Per-kernel holder / inner offsets and holder-pointer sanity
+		 * checks live inside stealth.c so comm.c stays version-agnostic;
+		 * a stale layout on an unfamiliar BSP surfaces here as
+		 * -EOPNOTSUPP instead of an rbtree walk oops. Long-term fix:
+		 * BTF-driven offset discovery (/sys/kernel/btf/kgsl) — tracked
+		 * as a follow-up. */
 #if DRV_KGSL_ENABLED
-		void *kgsl = resolve_kgsl_driver();
-		void *holder_a;
-		void *holder_b;
-
-		/* Downstream KGSL struct (out-of-tree Qualcomm module) has no public
-		 * header; offsets 0x440 / 0x448 are reverse-engineered from one
-		 * vendor BSP and are NOT stable across MSM / msm-5.x / SM8550-class
-		 * builds. Sanity-check the dereferenced pointers look like kernel
-		 * addresses (top bit set, pointer-aligned) before walking them as
-		 * rb_root holders; otherwise the rb_first/rb_next traversal will
-		 * oops on whatever stats counter happens to live at that offset.
-		 *
-		 * Long-term fix: BTF-driven offset discovery (/sys/kernel/btf/kgsl)
-		 * — confirmed available on the device-tested leg. Tracked as a
-		 * follow-up feature; this hardening turns "kernel oops" into
-		 * "ioctl returns -ENOTSUPP" in the meantime. */
-		result = (u64)(s64)-EOPNOTSUPP;
-		if (!kgsl)
-			break;
-		holder_a = *(void **)((u8 *)kgsl + 0x448);
-		holder_b = *(void **)((u8 *)kgsl + 0x440);
-		if (!drv_looks_like_kptr_or_null(holder_a) ||
-		    !drv_looks_like_kptr_or_null(holder_b)) {
-			pr_drv_warn("DRV_CMD_HIDE_KGSL: holder offsets stale on this build (a=%p b=%p); refusing\n",
-				    holder_a, holder_b);
-			break;
-		}
-		hide_kgsl(holder_a, (int)req.pid);
-		hide_kgsl2(holder_b, (int)req.pid);
-		result = 0;
+		result = (u64)(s64)hide_kgsl_by_pid(resolve_kgsl_driver(), (int)req.pid);
 #else
 		result = (u64)(s64)-EOPNOTSUPP;
 #endif
 		break;
-	}
 	case DRV_CMD_MULTI_READ:
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (mm) {

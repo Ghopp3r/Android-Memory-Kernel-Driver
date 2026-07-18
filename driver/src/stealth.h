@@ -7,13 +7,10 @@
 #include <linux/rbtree.h>
 #include <linux/types.h>
 
-/* Erase @target_pid from the rbtree reached via kgsl_driver+0x448 -> [+0x30] -> rbtree root @+0x48. PID is matched against the decimal string at offset -8 from the rb_node. */
-long hide_kgsl(void *kgsl_proc_list_root, int target_pid);
+/* Erase @target_pid from every kgsl_process_private rbtree held by @kgsl_driver. Wraps the two-holder walk seen in the enen family (kernels 5.15+); on 5.10 the vendor KGSL had a single holder and the second call is compiled out. Holder / inner offsets are selected from LINUX_VERSION_CODE; see stealth.c for the layout table. Returns 0 on success (target erased, or pid was not present in the tree), -EOPNOTSUPP if @kgsl_driver is NULL or a compile-time holder offset dereferences to a value that fails the ARM64 kernel-VA sanity check (guards against stale offsets on an unfamiliar BSP fork). */
+long hide_kgsl_by_pid(void *kgsl_driver, int target_pid);
 
-/* Mirror of hide_kgsl for the kgsl_driver+0x440 rbtree. Both must be called to fully cloak the PID. Duplicated (not parameterised) because the original binary inlined both call sites — keep dup so IDA name fingerprints continue to match. */
-long hide_kgsl2(void *kgsl_proc_list_root, int target_pid);
-
-/* Resolves the global kgsl_driver via kallsym (kallsyms_lookup_name is no longer exported on 6.x). Cached after first hit. */
+/* Resolves the global kgsl_driver via kallsym (kallsyms_lookup_name is no longer exported on 6.x). Cached after first hit. Returns NULL when KGSL is not loaded (headless / non-Qualcomm devices). */
 void *resolve_kgsl_driver(void);
 
 #endif /* DRIVER_STEALTH_H */

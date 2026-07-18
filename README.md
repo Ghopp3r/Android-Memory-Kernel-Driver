@@ -236,7 +236,7 @@ make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"' \
 | `ANON_INODE_NAME` | `"[driver]"` | name passed to `anon_inode_getfile` (visible at `/proc/<pid>/fd/<n>`) |
 | `REBOOT_MAGIC` | `0x123456u` | sentinel magic the reboot() handshake matches in `inner_regs[0]/[1]` |
 | `HIDE_SELF_MODULE` | `1` | compile the LKM module-list/sysfs concealment path (`0` or `1`) |
-| `HIDE_KGSL` | `0` | compile the vendor-specific KGSL process concealment path on kernels `< 6.12` (`0` or `1`) |
+| `HIDE_KGSL` | `0` | compile the vendor-specific KGSL process concealment path for supported 5.10-6.12 builds (`0` or `1`) |
 
 ## Device caveats
 
@@ -252,9 +252,10 @@ artifact.
 
 **KGSL concealment.** The vendor-specific KGSL rbtree walker is disabled by
 default (`HIDE_KGSL=0`) because its offsets are not stable across Qualcomm BSPs.
-Set `HIDE_KGSL=1` only for a matching pre-6.12 device build; on 6.12+ the
-KGSL path remains compile-time disabled and `DRV_CMD_HIDE_KGSL` returns
-`-EOPNOTSUPP`.
+Set `HIDE_KGSL=1` only for a matching Qualcomm device build. The opt-in path
+selects versioned layouts for the supported 5.10-6.12 KMIs and rejects holder
+pointers that fail its runtime sanity checks; with the default disabled build,
+`DRV_CMD_HIDE_KGSL` returns `-EOPNOTSUPP`.
 
 **Vendor RKP / kernel-text integrity protection.** On the NP05J target
 (Vivo, kernel `6.6.56 android15-8 GKI`) any modification of
@@ -298,7 +299,7 @@ not `_IO/_IOR/_IOW/_IOWR` macros.
 | `DRV_CMD_FIND_TASK_BY_COMM` | `0x10` | find pid by `task->comm` |
 | `DRV_CMD_READ_VMA_COOKIE` | `0x11` | walk mm_mt by anon_vma_name tag |
 | `DRV_CMD_GET_TLS` | `0x12` | target task's saved TPIDR_EL0 |
-| `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees when built with `HIDE_KGSL=1` on kernels `< 6.12` |
+| `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees when explicitly built with `HIDE_KGSL=1` |
 | `DRV_CMD_MULTI_READ` | `0x14` | vectored read across an array of {dst, src, len} descs (req.buf=array, req.extra=count, req.size=1/0 on success/fail) |
 | `DRV_CMD_DUMP_VMAS` | `0x15` | serialize file-backed VMAs (start, end) pairs |
 | `DRV_CMD_FIND_PID_BY_PACKAGE` | `0x16` | exact process `argv[0]` -> namespace-visible TGID via `drv_find_pid_req` |

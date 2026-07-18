@@ -53,11 +53,6 @@ case "${HIDE_KGSL}" in
     *) echo "ERROR: HIDE_KGSL must be 0 or 1." >&2; exit 2 ;;
 esac
 
-if [[ "${KMI}" == "android16-6.12" && "${HIDE_KGSL}" == "1" ]]; then
-    echo "WARNING: KGSL concealment is disabled for android16-6.12; forcing HIDE_KGSL=0."
-    HIDE_KGSL=0
-fi
-
 if [[ "${KMI}" == "-h" || "${KMI}" == "--help" ]]; then
     sed -n '2,30p' "$0"
     exit 0
