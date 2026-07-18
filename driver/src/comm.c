@@ -380,12 +380,7 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 			result = process_get_tls(task);
 		break;
 	case DRV_CMD_HIDE_KGSL:
-		/* Per-kernel holder / inner offsets and holder-pointer sanity
-		 * checks live inside stealth.c so comm.c stays version-agnostic;
-		 * a stale layout on an unfamiliar BSP surfaces here as
-		 * -EOPNOTSUPP instead of an rbtree walk oops. Long-term fix:
-		 * BTF-driven offset discovery (/sys/kernel/btf/kgsl) — tracked
-		 * as a follow-up. */
+		/* Versioned offsets and holder-pointer checks live in stealth.c; BTF-driven discovery remains a follow-up. */
 #if DRV_KGSL_ENABLED
 		result = (u64)(s64)hide_kgsl_by_pid(resolve_kgsl_driver(), (int)req.pid);
 #else
