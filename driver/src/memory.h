@@ -54,7 +54,7 @@ u64 process_get_tls(struct task_struct *task);
 /* Read target APGA keys; output is a best-effort snapshot. */
 int process_get_apga(struct task_struct *task, u64 *lo, u64 *hi);
 
-/* Caller must put_task_struct() on the non-NULL return. */
+/* Searches all threads. Caller must put_task_struct() on non-NULL return. */
 struct task_struct *process_find_task_by_comm(const char *comm);
 
 /* Find an exact process argv[0] and return the smallest TGID visible in the

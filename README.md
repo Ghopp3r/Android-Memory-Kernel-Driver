@@ -201,7 +201,7 @@ Naked-integer cmd values — `dispatch_ioctl` switches on the raw int, not `_IO/
 | `DRV_CMD_READ_MEM_VMAP` | `0x0D` | read via vmap (for high-mem / non-direct pages) |
 | `DRV_CMD_WRITE_MEM_VMAP` | `0x0E` | write via vmap |
 | `DRV_CMD_GET_MODULE_BASE` | `0x0F` | resolve module name → VMA base in target |
-| `DRV_CMD_FIND_TASK_BY_COMM` | `0x10` | find pid by `task->comm` |
+| `DRV_CMD_FIND_TASK_BY_COMM` | `0x10` | find matching task ID by `task->comm` (may return a worker TID) |
 | `DRV_CMD_READ_VMA_COOKIE` | `0x11` | exact `anon_vma_name` match returning `vm_start`; available on 5.17+ only when `CONFIG_ANON_VMA_NAME` is enabled |
 | `DRV_CMD_GET_TLS` | `0x12` | target task's saved TPIDR_EL0 |
 | `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees when explicitly built with `HIDE_KGSL=1` |

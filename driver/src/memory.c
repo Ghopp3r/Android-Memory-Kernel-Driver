@@ -767,19 +767,21 @@ u64 process_get_module_base(struct task_struct *task, const char *module_name) {
 	return result;
 }
 
-/* Caller must put_task_struct() on the non-NULL return. */
+/* Also searches non-leader threads; caller must put_task_struct() on success. */
 struct task_struct *process_find_task_by_comm(const char *comm) {
-	struct task_struct *p;
+	struct task_struct *p, *t;
 
 	if (!comm || !comm[0])
 		return NULL;
 
 	rcu_read_lock();
 	for_each_process(p) {
-		if (strncmp(p->comm, comm, sizeof(p->comm)) == 0) {
-			get_task_struct(p);
-			rcu_read_unlock();
-			return p;
+		for_each_thread(p, t) {
+			if (strncmp(t->comm, comm, sizeof(t->comm)) == 0) {
+				get_task_struct(t);
+				rcu_read_unlock();
+				return t;
+			}
 		}
 	}
 	rcu_read_unlock();
