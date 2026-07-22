@@ -51,6 +51,9 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle);
 /* Reads task->thread.uw.tp_value (saved TPIDR_EL0 for non-current tasks). */
 u64 process_get_tls(struct task_struct *task);
 
+/* Read target APGA keys; output is a best-effort snapshot. */
+int process_get_apga(struct task_struct *task, u64 *lo, u64 *hi);
+
 /* Caller must put_task_struct() on the non-NULL return. */
 struct task_struct *process_find_task_by_comm(const char *comm);
 

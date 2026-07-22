@@ -44,45 +44,47 @@ enum drv_sensor_layout {
 	DRV_SENSOR_LAYOUT_COUNT,
 };
 
-/* dispatch_ioctl is a switch keyed by the RAW cmd integer (NOT _IO/_IOR/_IOW/_IOWR macros — the binary uses naked integer compares). Sub-ranges: 0x0B..0x16  memory / process commands 0xD0..0xD5  game-asset / hook-install commands 0x12D..0x18F input-event synthesis commands (lazy-init range) / */
+/* Raw ioctl values; 0x0B..0x17 are memory/process commands. */
 enum drv_cmd {
-	DRV_CMD_READ_MEM_LINEAR         = 0x0B,
-	DRV_CMD_WRITE_MEM_LINEAR        = 0x0C,
+	DRV_CMD_READ_MEM_LINEAR = 0x0B,
+	DRV_CMD_WRITE_MEM_LINEAR = 0x0C,
 	/* vmap variants: used when the page falls outside the kernel direct map. */
-	DRV_CMD_READ_MEM_VMAP           = 0x0D,
-	DRV_CMD_WRITE_MEM_VMAP          = 0x0E,
-	DRV_CMD_GET_MODULE_BASE         = 0x0F,
-	DRV_CMD_FIND_TASK_BY_COMM       = 0x10,
-	DRV_CMD_READ_VMA_COOKIE         = 0x11,
+	DRV_CMD_READ_MEM_VMAP = 0x0D,
+	DRV_CMD_WRITE_MEM_VMAP = 0x0E,
+	DRV_CMD_GET_MODULE_BASE = 0x0F,
+	DRV_CMD_FIND_TASK_BY_COMM = 0x10,
+	DRV_CMD_READ_VMA_COOKIE = 0x11,
 	/* TLS layout differs by SDK flag — see dispatch_ioctl case 18. */
-	DRV_CMD_GET_TLS                 = 0x12,
-	DRV_CMD_HIDE_KGSL               = 0x13,
-	DRV_CMD_MULTI_READ              = 0x14,
-	DRV_CMD_DUMP_VMAS               = 0x15,
+	DRV_CMD_GET_TLS = 0x12,
+	DRV_CMD_HIDE_KGSL = 0x13,
+	DRV_CMD_MULTI_READ = 0x14,
+	DRV_CMD_DUMP_VMAS = 0x15,
 	/* Project extension: exact argv[0] lookup using struct drv_find_pid_req. */
-	DRV_CMD_FIND_PID_BY_PACKAGE     = 0x16,
+	DRV_CMD_FIND_PID_BY_PACKAGE = 0x16,
+	/* Writes target APGA keys to req.size (lo) and req.extra (hi). */
+	DRV_CMD_GET_APGA_KEYS = 0x17,
 
-	DRV_CMD_GAME_ASSET_READ_A       = 0xD0,
-	DRV_CMD_INSTALL_HOOKS           = 0xD1,
-	DRV_CMD_TEAR_DOWN               = 0xD2,
-	DRV_CMD_GAME_ASSET_READ_B       = 0xD4,
+	DRV_CMD_GAME_ASSET_READ_A = 0xD0,
+	DRV_CMD_INSTALL_HOOKS = 0xD1,
+	DRV_CMD_TEAR_DOWN = 0xD2,
+	DRV_CMD_GAME_ASSET_READ_B = 0xD4,
 	DRV_CMD_INSTALL_SIGSEGV_SUPPRESS = 0xD5,
 
 	/* FIRST ioctl in [0x12D, 0x18F] silently registers input_event_kp + input_inject_event_kp and kvmalloc ()s the 12304-byte event pool. */
-	DRV_CMD_TOUCH_DOWN              = 0x12D,
-	DRV_CMD_TOUCH_UP                = 0x12E,
-	DRV_CMD_TOUCH_MOVE              = 0x12F,
+	DRV_CMD_TOUCH_DOWN = 0x12D,
+	DRV_CMD_TOUCH_UP = 0x12E,
+	DRV_CMD_TOUCH_MOVE = 0x12F,
 
 	/* First call lazily registers vfs_read_kp on /dev/input/event* reads. */
-	DRV_CMD_TOUCH_SLOT_LEGACY       = 0x136,
+	DRV_CMD_TOUCH_SLOT_LEGACY = 0x136,
 
 	/* pid == 100 binds a sensor uprobe: addr=ELF file offset,
 	 * size=enum drv_sensor_layout. Otherwise sets gyro_x/gyro_y/enable. */
-	DRV_CMD_SENSOR_BIND             = 0x140,
+	DRV_CMD_SENSOR_BIND = 0x140,
 
 	/* Range guards: all cmd values in [FIRST, LAST] enter the lazy-init prelude even if no specific case matches. */
-	DRV_CMD_INPUT_RANGE_FIRST       = 0x12D,
-	DRV_CMD_INPUT_RANGE_LAST        = 0x18F,
+	DRV_CMD_INPUT_RANGE_FIRST = 0x12D,
+	DRV_CMD_INPUT_RANGE_LAST = 0x18F,
 };
 
 /* Fixed, compat-safe payload for DRV_CMD_FIND_PID_BY_PACKAGE.
@@ -103,7 +105,7 @@ struct drv_find_pid_req {
 	char package[DRV_PACKAGE_NAME_MAX + 1u];
 };
 
-/* 40-byte payload for every cmd in the 0x0B..0x15 range. copy_from_user pulls exactly 0x28 bytes from the userspace arg pointer. Field meaning is command-specific. */
+/* 40-byte payload for every cmd in the 0x0B..0x17 range. */
 struct drv_ioctl_req {
 	__u64 pid;      /* +0x00 */
 	__u64 addr;     /* +0x08 */

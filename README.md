@@ -208,6 +208,7 @@ Naked-integer cmd values — `dispatch_ioctl` switches on the raw int, not `_IO/
 | `DRV_CMD_MULTI_READ` | `0x14` | vectored read across an array of {dst, src, len} descs (req.buf=array, req.extra=count, req.size=1/0 on success/fail) |
 | `DRV_CMD_DUMP_VMAS` | `0x15` | serialize file-backed VMAs (start, end) pairs |
 | `DRV_CMD_FIND_PID_BY_PACKAGE` | `0x16` | exact process `argv[0]` -> namespace-visible TGID via `drv_find_pid_req` |
+| `DRV_CMD_GET_APGA_KEYS` | `0x17` | target thread APGA key snapshot: `req.size=lo`, `req.extra=hi`; returns `-EOPNOTSUPP` without Generic PAC or for a compat task |
 | `DRV_CMD_GAME_ASSET_READ_A/_B` | `0xD0` / `0xD4` | copy the harvested wz_hero buffers to userspace without clearing them |
 | `DRV_CMD_INSTALL_HOOKS` | `0xD1` | arm do_mem_abort + arm64_force_sig_fault kprobes |
 | `DRV_CMD_TEAR_DOWN` | `0xD2` | clear wz_hero arenas |

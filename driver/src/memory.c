@@ -38,6 +38,8 @@
 #include <asm/memory.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <asm/pointer_auth.h>
+#include <asm/processor.h>
 #include <asm/sysreg.h>
 #include <asm/tlbflush.h>
 
@@ -984,6 +986,28 @@ u64 process_get_tls(struct task_struct *task) {
 
 	/* AArch32 compat tasks store tp_value in thread.uw.tp_value at the same field name — the per-arch struct already accounts for the layout shift. */
 	return (u64)task->thread.uw.tp_value;
+}
+
+/* Read target APGA keys as a best-effort snapshot. */
+int process_get_apga(struct task_struct *task, u64 *lo, u64 *hi) {
+	if (!task || !lo || !hi)
+		return -EINVAL;
+
+#if IS_ENABLED(CONFIG_ARM64_PTR_AUTH)
+	if (!system_supports_generic_auth())
+		return -EOPNOTSUPP;
+#if IS_ENABLED(CONFIG_COMPAT)
+	if (is_compat_thread(task_thread_info(task)))
+		return -EOPNOTSUPP;
+#endif
+	*lo = READ_ONCE(task->thread.keys_user.apga.lo);
+	*hi = READ_ONCE(task->thread.keys_user.apga.hi);
+	return 0;
+#else
+	*lo = 0;
+	*hi = 0;
+	return -EOPNOTSUPP;
+#endif
 }
 
 /* DRV_CMD_READ_VMA_COOKIE walks the target's VMA tree, matches anon_vma_name

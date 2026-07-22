@@ -414,6 +414,33 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 	return 0;
 }
 
+/* APGA output occupies both req.size and req.extra. */
+static long do_get_apga_keys(void __user *arg) {
+	struct drv_ioctl_req req;
+	struct task_struct *task = NULL;
+	struct mm_struct *mm = NULL;
+	u64 apga_lo = 0, apga_hi = 0;
+	int rc;
+
+	if (read_req(arg, &req) != 0)
+		return -EFAULT;
+
+	resolve_target_mm((pid_t)req.pid, &task, &mm);
+	if (!task)
+		return -ESRCH;
+
+	rc = process_get_apga(task, &apga_lo, &apga_hi);
+	release_target_mm(task, mm);
+	if (rc)
+		return rc;
+
+	req.size = apga_lo;
+	req.extra = apga_hi;
+	if (copy_to_user(arg, &req, sizeof(req)) != 0)
+		return -EFAULT;
+	return 0;
+}
+
 static long do_find_pid_by_package(void __user *arg) {
 	struct drv_find_pid_req req;
 	size_t package_len;
@@ -539,6 +566,9 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 
 	if (cmd == DRV_CMD_FIND_PID_BY_PACKAGE)
 		return do_find_pid_by_package(uarg);
+
+	if (cmd == DRV_CMD_GET_APGA_KEYS)
+		return do_get_apga_keys(uarg);
 
 	if (cmd >= DRV_CMD_READ_MEM_LINEAR && cmd <= DRV_CMD_DUMP_VMAS)
 		return do_memory_cmd(cmd, uarg);
