@@ -210,7 +210,7 @@ static int write_transaction_locked(struct user_hook_slot *slot, const u32 desir
 }
 
 static int restore_slot_locked(struct user_hook_slot *slot, bool *mm_dead) {
-	u32 current[USER_HOOK_MAX_INSNS];
+	u32 observed[USER_HOOK_MAX_INSNS];
 	bool rollback_ok;
 	int rc;
 
@@ -221,9 +221,9 @@ static int restore_slot_locked(struct user_hook_slot *slot, bool *mm_dead) {
 	}
 	rc = validate_vma(slot->mm, slot->addr);
 	if (rc) goto out;
-	rc = copy_remote_locked(slot->mm, slot->addr, current, false);
+	rc = copy_remote_locked(slot->mm, slot->addr, observed, false);
 	if (rc) goto out;
-	if (memcmp(current, slot->original, USER_HOOK_PATCH_BYTES) == 0) {
+	if (memcmp(observed, slot->original, USER_HOOK_PATCH_BYTES) == 0) {
 		rc = 0;
 		goto out;
 	}
@@ -231,7 +231,7 @@ static int restore_slot_locked(struct user_hook_slot *slot, bool *mm_dead) {
 		rc = -EUCLEAN;
 		goto out;
 	}
-	if (memcmp(current, slot->expected, USER_HOOK_PATCH_BYTES) != 0) {
+	if (memcmp(observed, slot->expected, USER_HOOK_PATCH_BYTES) != 0) {
 		rc = -ESTALE;
 		goto out;
 	}
@@ -309,7 +309,7 @@ static long do_install(void __user *arg) {
 	struct pid *pid;
 	unsigned long addr;
 	u32 next[USER_HOOK_MAX_INSNS];
-	u32 current[USER_HOOK_MAX_INSNS];
+	u32 observed[USER_HOOK_MAX_INSNS];
 	bool rollback_ok;
 	bool mm_dead;
 	bool slot_owns_refs = false;
@@ -349,9 +349,9 @@ static long do_install(void __user *arg) {
 	if (dup) {
 		rc = validate_vma(dup->mm, dup->addr);
 		if (rc) goto out_unlock_free_new;
-		rc = copy_remote_locked(dup->mm, dup->addr, current, false);
+		rc = copy_remote_locked(dup->mm, dup->addr, observed, false);
 		if (rc) goto out_unlock_free_new;
-		if (!dup->expected_valid || memcmp(current, dup->expected, USER_HOOK_PATCH_BYTES) != 0) {
+		if (!dup->expected_valid || memcmp(observed, dup->expected, USER_HOOK_PATCH_BYTES) != 0) {
 			rc = -ESTALE;
 			goto out_unlock_free_new;
 		}
