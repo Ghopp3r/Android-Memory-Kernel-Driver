@@ -116,38 +116,8 @@ jobs:
         working-directory: driver
         run: |
           set -eux
-          set -o pipefail
-          make -j"$(nproc)" 2>&1 | tee build.log
+          make -j"$(nproc)"
           ls -la "${DRIVER_NAME}.ko"
-
-      - name: Upload kernel build log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ matrix.kmi }}
-          path: driver/build.log
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Publish kernel build error
-        if: failure()
-        working-directory: driver
-        run: |
-          {
-            echo '### Kernel compiler output'
-            echo '```text'
-            cat build.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          error=$(tail -c 900 build.log | tr '\n' ' ' | tr -s ' ')
-          error=${error//\\/\\\\}
-          error=${error//\"/\\\"}
-          payload=$(printf '{"state":"failure","context":"ci/kernel-error/%s","description":"%s"}' "${{ matrix.kmi }}" "$error")
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "$payload"
 
       - name: Verify default concealment feature gates
         working-directory: driver
