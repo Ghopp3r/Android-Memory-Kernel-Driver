@@ -121,7 +121,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            grep -E '(^|:)(fatal error|error:|warning:)|undefined reference|No rule to make target' build.log | while IFS= read -r line; do
+            grep -E 'fatal error|error:|warning:|undefined reference|No rule to make target' build.log | while IFS= read -r line; do
               echo "::error title=kernel compiler::$line"
             done || true
             tail -n 40 build.log
