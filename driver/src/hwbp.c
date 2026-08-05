@@ -239,7 +239,7 @@ static bool hwbp_has_fp_override(const struct drv_hwbp_reg_override *overrides, 
 	return false;
 }
 
-static int hwbp_set_breakpoint_address(struct hwbp_tracker *tracker, struct perf_event *bp, u64 addr) {
+static int hwbp_set_breakpoint_address(struct perf_event *bp, u64 addr) {
 	struct perf_event_attr attr = bp->attr;
 
 	attr.bp_addr = addr;
@@ -276,7 +276,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 	}
 
 	if (tracker->pass_through && READ_ONCE(tracker->toggle) == HWBP_TOGGLE_NEXT) {
-		rc = hwbp_set_breakpoint_address(tracker, bp, tracker->addr);
+		rc = hwbp_set_breakpoint_address(bp, tracker->addr);
 		if (rc) {
 			pr_drv_warn_ratelimited("hwbp: rearm rc=%d\n", rc);
 			return;
@@ -296,7 +296,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	rc = hwbp_set_breakpoint_address(tracker, bp, tracker->addr + DRV_HWBP_LEN_EXECUTE);
+	rc = hwbp_set_breakpoint_address(bp, tracker->addr + DRV_HWBP_LEN_EXECUTE);
 	if (rc) {
 		pr_drv_warn_ratelimited("hwbp: advance rc=%d\n", rc);
 		return;
