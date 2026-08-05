@@ -16,15 +16,6 @@ The GitHub workflow builds one module against each supported Android KMI and com
 
 Only `android15-6.6` has current device runtime coverage (NP05J / Android 15 / kernel 6.6.56). The other legs are compile-validated by Actions.
 
-## Latest validation
-
-| Check | Environment | Result |
-| --- | --- | --- |
-| Build matrix | [Actions #71](https://github.com/Ghopp3r/Android-Memory-Kernel-Driver/actions/runs/31043129620) | 7 kernel targets and the arm64 client passed |
-| Core runtime probe | NP05J, Android 15, kernel 6.6.56 | 7/7 passed: memory R/W, PTE install/remove, HWBP install/get-hits/remove |
-| Hook stress benchmark | Same device and fresh 6.6 artifact | Completed PTE update/remove and HWBP install/set loops |
-| Kernel log after tests | Same boot session | No driver errors, kernel BUG, Oops, or panic |
-
 ## Build
 
 The repository intentionally does not build kernel code on the host. Use GitHub Actions or the matching DDK image:
@@ -62,9 +53,55 @@ Both APIs use access to the trusted driver fd as their permission boundary. They
 
 ## Benchmark snapshot
 
-These are historical single-device measurements on NP05J / Android 15 / kernel 6.6.56 and are not portability or safety guarantees. Driver/process_vm/procmem mean per-operation read times in microseconds were 4 B `0.88/1.50/1.53`, 16 B `0.87/1.50/1.61`, 256 B `0.90/1.54/1.75`, 4 KiB `1.41/2.05/2.36`, 16 KiB `3.35/4.76/6.79`, 64 KiB `14.7/19.0/27.8`, 1 MiB `223/270/418`, and 4 MiB `910/992/1683`. Driver/process_vm mean write times were 0.87/1.52 microseconds for 4 B, 1.28/1.94 for 4 KiB, 15.4/19.2 for 64 KiB, and 222/269 for 1 MiB.
+Fresh single-device measurements on NP05J / Android 15 / kernel 6.6.56. Values are microseconds; read and write values are mean per operation. They are comparison data, not portability or safety guarantees.
 
-`MULTI_READ` sequential/driver mean batch times were 7.0/2.2 microseconds for 8 entries, 27.9/4.7 for 32, 114/15.0 for 128, and 441/55.1 for 512. Historical hook measurements were PTE 5/5/6 microseconds p50/p95/p99 (mostly reinstall/update), cold HWBP install 13/70/736, and `SET_OVERRIDE` 0.78/0.78/0.78. The old hook harness was fail-open in places and predates the current hardening, so its numbers are references rather than current guarantees.
+### Memory read
+
+| Size | Driver | process_vm_readv | /proc/pid/mem |
+| --- | ---: | ---: | ---: |
+| 4 B | 0.699 | 1.162 | 1.518 |
+| 16 B | 0.711 | 1.186 | 1.515 |
+| 64 B | 0.738 | 1.184 | 1.508 |
+| 256 B | 0.735 | 1.203 | 1.510 |
+| 1 KiB | 0.809 | 1.298 | 1.615 |
+| 4 KiB | 1.142 | 1.613 | 1.999 |
+| 16 KiB | 2.795 | 3.867 | 5.954 |
+| 64 KiB | 12.293 | 15.762 | 23.481 |
+| 256 KiB | 46.200 | 57.262 | 90.411 |
+| 1 MiB | 188.905 | 225.284 | 362.884 |
+| 4 MiB | 796.633 | 815.044 | 1470.967 |
+
+### Memory write
+
+| Size | Driver | process_vm_writev |
+| --- | ---: | ---: |
+| 4 B | 0.710 | 1.166 |
+| 16 B | 0.721 | 1.178 |
+| 64 B | 0.718 | 1.181 |
+| 256 B | 0.724 | 1.192 |
+| 1 KiB | 0.790 | 1.245 |
+| 4 KiB | 1.047 | 1.521 |
+| 64 KiB | 12.651 | 15.875 |
+| 1 MiB | 191.251 | 227.859 |
+
+### MULTI_READ
+
+| Entries | N x READ | MULTI_READ | Speedup |
+| ---: | ---: | ---: | ---: |
+| 8 | 5.913 | 1.819 | 3.25x |
+| 32 | 23.167 | 3.868 | 5.99x |
+| 128 | 92.547 | 12.573 | 7.36x |
+| 512 | 373.199 | 46.071 | 8.10x |
+
+### Hook ioctl latency
+
+| Operation | p50 | p95 | p99 | Min | Max | Samples |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| PTE install/update | 4.063 | 4.219 | 5.156 | 3.906 | 17.552 | 200 |
+| HWBP install | 9.688 | 13.438 | 2448.438 | 8.802 | 2448.438 | 100 |
+| HWBP SET_OVERRIDE | 0.834 | 0.938 | 0.938 | 0.781 | 1.250 | 1000 |
+
+The hook harness measures ioctl latency only; treat its results as reference data, not a portability or safety guarantee.
 
 ## Layout
 
