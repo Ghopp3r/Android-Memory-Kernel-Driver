@@ -13,6 +13,7 @@
 #define pr_drv(fmt, ...) printk(KERN_INFO DRV_LOG_TAG " " fmt, ##__VA_ARGS__)
 #define pr_drv_err(fmt, ...) printk(KERN_ERR DRV_LOG_TAG " " fmt, ##__VA_ARGS__)
 #define pr_drv_warn(fmt, ...) printk(KERN_WARNING DRV_LOG_TAG " " fmt, ##__VA_ARGS__)
+#define pr_drv_warn_ratelimited(fmt, ...) printk_ratelimited(KERN_WARNING DRV_LOG_TAG " " fmt, ##__VA_ARGS__)
 #define pr_drv_notice(fmt, ...) printk(KERN_NOTICE DRV_LOG_TAG " " fmt, ##__VA_ARGS__)
 
 #ifdef CONFIG_DRIVER_VERBOSE_DEBUG

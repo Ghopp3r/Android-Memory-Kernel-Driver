@@ -1,163 +1,71 @@
 # my-driver
 
-Android ARM64 loadable kernel module — a reverse-engineered reconstruction of a real privileged R/W + input-injection + sensor-spoof + page-fault-harvest driver. Speaks to userspace over an `ioctl()` channel obtained via a magic `reboot()` handshake — no `/dev` node. By default, all supported KMI builds retain the original module-list/sysfs concealment; the vendor-specific KGSL process concealment is compiled out by default.
-
-Field-based source against GKI kernel headers — one source tree builds seven KMI variants via the Docker DDK image. Code uses `task->mm` / `dev->event_lock` / `pgd_offset(...)` directly; per-kernel struct layout is selected by the headers for each build target.
+Android ARM64 loadable kernel module with privileged process-memory R/W, touch injection, sensor spoofing, page-fault harvest, optional KGSL concealment, and two explicit hook APIs. The userspace fd is created through the existing magic `reboot()` handshake; no device node is required. `HIDE_SELF_MODULE=1` remains the default, while `HIDE_KGSL=0` keeps the vendor-specific path opt-in.
 
 ## Build matrix
 
-| KMI | Kernel | Android | Module visibility | CI |
-| --- | --- | --- | --- | --- |
-| `android12-5.10` | 5.10 | 12 | hidden | ✅ |
-| `android13-5.10` | 5.10 | 13 | hidden | ✅ |
-| `android13-5.15` | 5.15 | 13 | hidden | ✅ |
-| `android14-5.15` | 5.15 | 14 | hidden | ✅ |
-| `android14-6.1` | 6.1 | 14 | hidden | ✅ |
-| `android15-6.6` | 6.6 | 15 | hidden | ✅ (device-tested) |
-| `android16-6.12` | 6.12 | 16 | hidden | ✅ |
+The GitHub workflow builds one module against each supported Android KMI and compiles the Android arm64 client:
 
-Runtime device coverage is currently the `android15-6.6` leg (NP05J / Vivo / kernel `6.6.56 android15-8 GKI` / KernelSU root). The other six legs are compile-validated by CI but not yet runtime-tested.
+- `android12-5.10`
+- `android13-5.10`
+- `android13-5.15`
+- `android14-5.15`
+- `android14-6.1`
+- `android15-6.6`
+- `android16-6.12`
 
-## Quick start — Docker DDK
+Only `android15-6.6` has current device runtime coverage (NP05J / Android 15 / kernel 6.6.56). The other legs are compile-validated by Actions.
+
+## Build
+
+The repository intentionally does not build kernel code on the host. Use GitHub Actions or the matching DDK image:
 
 ```bash
 cd driver
-./build.sh android15-6.6 # or any KMI from the table
-# -> driver/my-driver.ko
+./build.sh android15-6.6
 HIDE_SELF_MODULE=0 HIDE_KGSL=1 ./build.sh android15-6.6
 ```
 
-Equivalent one-liner:
-
-```bash
-docker run --rm --privileged -v "$PWD/driver:/work" -w /work ghcr.io/ylarod/ddk:android15-6.6-20251104 make
-```
-
-The default DDK release is `20251104`. It is the first release that builds `android16-6.12` external modules with normalized KCFI integer type IDs; do not use `20251016` for that KMI. CI and `driver/build.sh` verify both the kernel configuration and the compiler command before publishing a 6.12 artifact.
-
-## Quick start — GitHub Actions
-
-Push to a GitHub repo. The included workflow (`.github/workflows/build.yml`) runs all seven KMI legs in parallel and uploads `my-driver-<kmi>.ko` as an artifact per leg. A separate Android NDK job compiles the arm64 client, probe, and benchmark against the same UAPI and uploads them as `userspace-arm64-v8a`. Trigger manually via `workflow_dispatch` to pick a specific DDK image release tag.
+The default DDK release is `20251104`; it is required by the `android16-6.12` KCFI checks. The workflow publishes one `.ko` artifact per KMI and one static arm64 userspace client. The tracked `scripts/` test tools were removed from the repository and are ignored locally.
 
 ## Userspace client
 
-Two equivalent build paths — CMake with the NDK toolchain or direct `clang++` invocation. **Critical**: link with `-static-libstdc++` or push `libc++_shared.so` alongside the binary because `/data/local/tmp/` does not provide a libc++ runtime.
-
-### CMake
+Build with the Android NDK and CMake:
 
 ```bash
-cd client
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 -DANDROID_STL=c++_static
-cmake --build build
-adb push build/my-driver-client /data/local/tmp/test/
+cmake -S client -B out/client -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release
+cmake --build out/client
 ```
 
-### Direct clang++
+The client opens the fd lazily. `findPidByPackage()` matches the complete `argv[0]`; after `setTarget(pid)`, the existing APIs are available as `driver.memory`, `driver.touch`, and `driver.gyro`.
 
-```bash
-$ANDROID_NDK/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android30-clang++ -std=c++17 -O2 -fno-exceptions -fno-rtti -static-libstdc++ -I client/src -I driver/include client/src/Driver.cpp client/src/Main.cpp -o my-driver-client
-```
+## Hook APIs
 
-### Usage
+`driver.hwbp` installs an AArch64 execute breakpoint for one target thread. It supports X0..X30, PC, and SIMD V0..V31 low/high 64-bit overrides, a 32-entry hit ring, idempotent override updates, and explicit remove/clear operations. v1 pass-through accepts only fall-through instructions; branches, returns, exceptions, watchpoints, compat tasks, and non-executable mappings return an error. `getHits()` captures raw entry registers before overrides. Tracker identity uses the kernel PID object and target `mm`, preventing numeric PID reuse and `execve()` redirection.
 
-The client uses a small RAII C++ class. Global instance `driver` opens the ioctl fd lazily on first use:
+`driver.pteHook` installs a 32-byte constant-return stub in a private executable mapping. `returnConst<T>()` supports integral, enum, pointer, float, and double values; `returnVoid()` emits only a return. The trampoline kind is reserved for a future ABI. The stub starts with a BTI-compatible landing instruction, validates one complete same-page private VMA, and records expected patched bytes. Reinstall, remove, and global `clearAll()` refuse to overwrite a changed function and report restoration errors.
 
-```cpp
-#include "Driver.h"
+Both APIs use access to the trusted driver fd as their permission boundary. They do not stop target threads: callers must quiesce all threads sharing the target `mm` while installing or removing a 32-byte patch. Forked private COW mappings and remapping are outside the v1 registry model. Closing the C++ client does not clear global hooks.
 
-auto pid = driver.findPidByPackage("com.example.game");
-if (pid) {
-    driver.setTarget(*pid);
-    auto base = driver.memory.getModuleBase("libUE4.so");
-    if (base) {
-        uint32_t magic = driver.memory.read<uint32_t>(*base).value_or(0);
-    }
-}
-driver.touch.down(0, 100, 200);
-driver.touch.up(0);
-```
+## Benchmark snapshot
 
-`findPidByPackage()` is a driver-side lookup of the process's complete `argv[0]`, not the 16-byte `task->comm`. Matching is exact: the main process `com.example.game` and a subprocess such as `com.example.game:remote` are selected independently by passing their full names.
+These are historical single-device measurements on NP05J / Android 15 / kernel 6.6.56 and are not portability or safety guarantees. Driver/process_vm/procmem read medians in microseconds were 4 B `0.88/1.50/1.53`, 16 B `0.87/1.50/1.61`, 256 B `0.90/1.54/1.75`, 4 KiB `1.41/2.05/2.36`, 16 KiB `3.35/4.76/6.79`, 64 KiB `14.7/19.0/27.8`, 1 MiB `223/270/418`, and 4 MiB `910/992/1683`. Driver/process_vm write medians were 0.87/1.52 microseconds for 4 B, 1.28/1.94 for 4 KiB, 15.4/19.2 for 64 KiB, and 222/269 for 1 MiB.
 
-`driver.open()` issues `syscall(SYS_reboot, 0x123456, 0x123456, 0, &fd)`. The kprobe pre-handler queues task work; when the task resumes, that work creates the anon-inode fd and writes its number to the userspace pointer. **Reachable from `adb shell` uid; bionic seccomp blocks `__NR_reboot` for Zygote-forked app uids** — bootstrap from inside an app through a privileged helper.
-
-## Test harness (scripts/)
-
-`scripts/src/drv_probe.c` is a single-binary correctness harness. It spawns a helper child with a known mmap pattern and comm, then exercises the core memory, process, hook, input, and sensor commands against ground truth. The package lookup group also execs a uniquely named child and checks exact matching, empty input, and bounded NUL handling. The default run records 22 correctness assertions plus the latency pass, writes JSON and CSV output, and exits non-zero on any failure.
-
-```bash
-# Build (same NDK clang++ as the client, +I driver/include):
-aarch64-linux-android30-clang -Os -I driver/include scripts/src/drv_probe.c -o drv_probe
-adb push drv_probe my-driver-android15-6.6.ko /data/local/tmp/test/
-adb shell 'su -c "insmod /data/local/tmp/test/my-driver-android15-6.6.ko"'
-adb shell '/data/local/tmp/test/drv_probe --iters=1000 --json=/data/local/tmp/test/results.json --csv=/data/local/tmp/test/timing.csv'
-```
-
-`scripts/src/drv_bench.c` is a comparative latency benchmark across three process-memory R/W methods:
-
-| Method | Path |
-| --- | --- |
-| `procmem` | `open("/proc/<pid>/mem") + pread64` |
-| `process_vm_readv` | `syscall(SYS_process_vm_readv, pid, iov, 1, iov, 1, 0)` |
-| `driver` | `ioctl(fd, DRV_CMD_READ_MEM_LINEAR, &req)` |
-
-Reads the first N bytes of `--module=libname.so` inside `--pkg=`, where N ∈ {16 B, 256 B, 4 KiB, 64 KiB, 1 MiB}, with 1000 iterations per method and size. Reports median / p95 / p99 / min / max latency and throughput.
-
-### Current numbers (NP05J / android15-6.6, target: SystemUI/libc.so)
-
-| Size | procmem | process_vm_readv | **driver** |
-| --- | --- | --- | --- |
-| 16 B | 1.9 µs | 1.7 µs | **0.9 µs** |
-| 256 B | 1.9 µs (133 MB/s) | 1.7 µs (145 MB/s) | **1.0 µs (252 MB/s)** |
-| 4 KiB | 2.6 µs (1.5 GB/s) | 2.3 µs (1.7 GB/s) | **1.5 µs (2.6 GB/s)** |
-| 64 KiB | 28.6 µs (2.2 GB/s) | 18.4 µs (3.3 GB/s) | **14.8 µs (4.3 GB/s)** |
-| **1 MiB** | 437 µs (2.3 GB/s) | **270 µs (3.8 GB/s)** | **220 µs (4.7 GB/s)** |
-
-Driver beats `process_vm_readv` by 1.2–1.9× across all sizes.
-
-`scripts/verify-on-device.sh` is the host orchestrator: CMake / NDK build → adb push → insmod → run → pull results and a dmesg slice.
+`MULTI_READ` sequential/driver medians were 7.0/2.2 microseconds for 8 entries, 27.9/4.7 for 32, 114/15.0 for 128, and 441/55.1 for 512. Historical hook measurements were PTE 5/5/6 microseconds p50/p95/p99 (mostly reinstall/update), cold HWBP install 13/70/736, and `SET_OVERRIDE` 0.78/0.78/0.78. The old harness was fail-open in places, so these are reference measurements only.
 
 ## Layout
 
-```
-driver/
-  Kbuild               kbuild objs list + ccflags (KCFG_TARGET_PACKAGE etc.)
-  Makefile             out-of-tree entry; honours $KERNEL_SRC from DDK image
-  build.sh             docker convenience wrapper
-  include/driver/
-    uapi.h             shared kernel<->userspace ioctl surface
-    types.h            internal driver state types
-  src/
-    lifecycle.c        module initialization + compile-time self-concealment
-    comm.c             reboot() handshake (kprobe on __arm64_sys_reboot) + dispatch_ioctl router
-    memory.c           process pagewalk + read/write_process_memory_linear, _vmap, and multi_read_process_memory; in-page-offset-correct; no per-page dcache flush on reads
-    uaccess_target.c   TTBR0-swap copy_*_user wrappers for cross-mm operations
-    vfs_hijack.c       /dev/input/event* read interception via fops proxy
-    input_synth.c      synthetic MT event injection via kprobe on input_event
-    sensor.c           gyro spoofing via libsensorservice.so uprobe
-    harvest.c          page-fault address harvest via kprobe on do_mem_abort, not an inline hook on do_page_fault
-    stealth.c          KGSL/Adreno process concealment (rbtree erase)
-    hook_engine.c      KernelPatch-style inline-hook engine; bypassed for harvest on devices with vendor RKP
-    kallsym.c          kallsyms_lookup_name shim via the kprobe-on-symbol trick
-
-client/
-  CMakeLists.txt
-  src/
-    Driver.h           CDriver class + global `driver` instance
-    Driver.cpp         single-path reboot() handshake + ioctl wrappers
-    SensorResolve.h    libsensorservice symbol resolver for HIDL/AIDL profiles
-    Main.cpp           interactive demo (prompt for pid/package, run ops)
-
-scripts/
-  CMakeLists.txt           NDK build for drv_probe / drv_bench
-  verify-on-device.sh      host orchestrator (build + push + insmod + run + pull)
-  src/
-    drv_probe.c            correctness harness — 22 core-command assertions with ground-truth verification; JSON + CSV output
-    drv_bench.c            latency benchmark vs /proc/<pid>/mem and process_vm_readv; 5 sizes × 1000 iterations per method
-
-.github/workflows/build.yml   7-KMI matrix CI; per-leg my-driver-<kmi>.ko artefact
-
-diagnostics/capture-kmsg.sh   background /dev/kmsg capture helper for device debugging
+```text
+driver/include/driver/uapi.h  shared kernel/userspace ABI
+driver/src/memory.c           pagewalk and process-memory R/W
+driver/src/hwbp.c             hardware breakpoint subsystem
+driver/src/user_hook.c        constant-return user-code hooks
+driver/src/sensor.c           HIDL/AIDL sensor uprobe
+driver/src/input_synth.c      touch injection
+driver/src/stealth.c          optional KGSL concealment
+client/src/Driver.*           userspace API and ioctl wrappers
+diagnostics/capture-kmsg.sh   Toybox-compatible kmsg capture helper
+.github/workflows/build.yml   seven-KMI module and arm64 client build
 ```
 
 ## Configurable knobs
@@ -166,65 +74,11 @@ diagnostics/capture-kmsg.sh   background /dev/kmsg capture helper for device deb
 make DRIVER_NAME=my-driver TARGET_PKG='"cent.tmgp.sgame"' HIDE_SELF_MODULE=1 HIDE_KGSL=0
 ```
 
-| Kbuild variable | default | what it sets |
-| --- | --- | --- |
-| `DRIVER_NAME` | `my-driver` | output `.ko` filename + `__this_module.name` |
-| `TARGET_PKG` | `"cent.tmgp.sgame"` | `task->comm` value matched by the harvest path, limited to `TASK_COMM_LEN` (quotes required) |
-| `REBOOT_MAGIC` | `0x123456u` | sentinel magic the reboot() handshake matches in `inner_regs[0]/[1]` |
-| `HIDE_SELF_MODULE` | `1` | compile the LKM module-list/sysfs concealment path (`0` or `1`) |
-| `HIDE_KGSL` | `0` | compile the vendor-specific KGSL process concealment path for supported 5.10-6.12 builds (`0` or `1`) |
+`DRIVER_NAME` controls the module filename. `TARGET_PKG` selects the harvest package string. `REBOOT_MAGIC` controls the handshake. `HIDE_SELF_MODULE` toggles module-list/sysfs concealment. `HIDE_KGSL` enables the versioned vendor-specific KGSL path only when its offsets match the target device.
 
-`ANON_INODE_NAME` is still accepted and forwarded by Kbuild, but the current fd-install path uses the fixed `"[driver]"` literal, so changing that variable has no effect yet.
+## Caveats
 
-## Device caveats
-
-**Module lifecycle.** With the default `HIDE_SELF_MODULE=1`, the concealment path removes the module from `/proc/modules` and `/sys/module` after initialization on every supported KMI, including Android 16 / 6.12. It directly mutates loader-owned lists and the module kobject, retaining the same race and maintenance risk as the reconstructed driver. Set `HIDE_SELF_MODULE=0` when a visible module is needed for debugging. Every build intentionally has no unload entry point: lazy kprobes, uprobes, and task-work callbacks can retain driver pointers after an ioctl, so reboot the device before replacing a loaded artifact.
-
-**KGSL concealment.** The vendor-specific KGSL rbtree walker is disabled by default (`HIDE_KGSL=0`) because its offsets are not stable across Qualcomm BSPs. Set `HIDE_KGSL=1` only for a matching Qualcomm device build. The opt-in path selects versioned layouts for the supported 5.10-6.12 KMIs and rejects holder pointers that fail its runtime sanity checks; with the default disabled build, `DRV_CMD_HIDE_KGSL` returns `-EOPNOTSUPP`.
-
-**Vendor RKP / kernel-text integrity protection.** On the NP05J target (Vivo, kernel `6.6.56 android15-8 GKI`) any modification of `do_page_fault` text via `aarch64_insn_patch_text` reliably reboots the kernel within microseconds, even with a correctly cache-coherent and PXN-cleared trampoline. Harvest therefore registers a `kprobe` on `do_mem_abort` instead of inline-hooking `do_page_fault`. The inline-hook engine remains compiled for future cold-path use on unprotected kernels.
-
-**Handshake reachability.** `reboot()` reaches the kernel from the `adb shell` uid on android15-6.6, but bionic seccomp blocks `__NR_reboot` (142) for Zygote-forked app uids before the SVC reaches the kprobe. Bootstrap from inside an app through a privileged helper without that filter.
-
-**On-device workspace.** `/data/local/tmp/test/` is the only device workspace used. pstore is mounted but ramoops is not configured on the tested device; capture kernel logs with `cat /dev/kmsg > file.log &` and periodic `sync`.
-
-## ioctl surface (driver/include/driver/uapi.h)
-
-Naked-integer cmd values — `dispatch_ioctl` switches on the raw int, not `_IO/_IOR/_IOW/_IOWR` macros.
-
-| cmd | hex | purpose |
-| --- | --- | --- |
-| `DRIVER_IOCTL_PING` | `0x9FBF1` | fd-validity probe |
-| `DRIVER_IOCTL_HELLO` | `0x1E240` | echo-back protocol probe |
-| `DRV_CMD_READ_MEM_LINEAR` | `0x0B` | read target mem via linear-map alias |
-| `DRV_CMD_WRITE_MEM_LINEAR` | `0x0C` | write target mem via linear-map alias |
-| `DRV_CMD_READ_MEM_VMAP` | `0x0D` | read via vmap (for high-mem / non-direct pages) |
-| `DRV_CMD_WRITE_MEM_VMAP` | `0x0E` | write via vmap |
-| `DRV_CMD_GET_MODULE_BASE` | `0x0F` | resolve module name → VMA base in target |
-| `DRV_CMD_FIND_TASK_BY_COMM` | `0x10` | find matching task ID by `task->comm` (may return a worker TID) |
-| `DRV_CMD_READ_VMA_COOKIE` | `0x11` | exact `anon_vma_name` match returning `vm_start`; available on 5.17+ only when `CONFIG_ANON_VMA_NAME` is enabled |
-| `DRV_CMD_GET_TLS` | `0x12` | target task's saved TPIDR_EL0 |
-| `DRV_CMD_HIDE_KGSL` | `0x13` | erase pid from KGSL process rbtrees when explicitly built with `HIDE_KGSL=1` |
-| `DRV_CMD_MULTI_READ` | `0x14` | vectored read across an array of {dst, src, len} descs (req.buf=array, req.extra=count, req.size=1/0 on success/fail) |
-| `DRV_CMD_DUMP_VMAS` | `0x15` | serialize file-backed VMAs (start, end) pairs |
-| `DRV_CMD_FIND_PID_BY_PACKAGE` | `0x16` | exact process `argv[0]` -> namespace-visible TGID via `drv_find_pid_req` |
-| `DRV_CMD_GET_APGA_KEYS` | `0x17` | target thread APGA key snapshot: `req.size=lo`, `req.extra=hi`; returns `-EOPNOTSUPP` without Generic PAC or for a compat task |
-| `DRV_CMD_GAME_ASSET_READ_A/_B` | `0xD0` / `0xD4` | copy the harvested wz_hero buffers to userspace without clearing them |
-| `DRV_CMD_INSTALL_HOOKS` | `0xD1` | arm do_mem_abort + arm64_force_sig_fault kprobes |
-| `DRV_CMD_TEAR_DOWN` | `0xD2` | clear wz_hero arenas |
-| `DRV_CMD_INSTALL_SIGSEGV_SUPPRESS` | `0xD5` | alias of INSTALL_HOOKS |
-| `DRV_CMD_TOUCH_DOWN/UP/MOVE` | `0x12D..0x12F` | synthetic MT events (first call in range lazily arms input kprobes + event pool) |
-| `DRV_CMD_TOUCH_SLOT_LEGACY` | `0x136` | legacy no-op after the input lazy-init prelude |
-| `DRV_CMD_SENSOR_BIND` | `0x140` | `pid=100`: bind the libsensorservice uprobe with an explicit HIDL/AIDL layout; otherwise set gyro X/Y/enable from `addr`/`size`/`extra` |
-
-## Reference upstreams
-
-Used for spec verification — preferred over guessing or extrapolating from kernel docs alone:
-
-- [bmax121/KernelPatch](https://github.com/bmax121/KernelPatch) — source of the ported `hook_engine.c` inline-hook engine.
-- [fuqiuluo/android-wuwa](https://github.com/fuqiuluo/android-wuwa) — closest sibling for R/W, touch, sensor uprobe, KGSL concealment, and page-fault harvest behavior.
-- [fuqiuluo/ovo](https://github.com/fuqiuluo/ovo) — simpler R/W and touch sibling documenting a `remap_pfn_range`-based zero-copy bulk path.
-- [tiann/KernelSU](https://github.com/tiann/KernelSU) — reference for the prctl/reboot magic → anon-inode fd → ioctl communication pattern.
+The module has no unload entry point because kprobes, task work, and hook callbacks can retain module pointers; reboot before replacing a loaded artifact. The memory path intentionally does not pin pages, so migration races and COW semantics remain. `HIDE_KGSL=1` is not universal across Qualcomm BSPs and should be enabled only after its runtime sanity checks pass. `diagnostics/capture-kmsg.sh` is a debugging helper, not a production logger.
 
 ## License
 

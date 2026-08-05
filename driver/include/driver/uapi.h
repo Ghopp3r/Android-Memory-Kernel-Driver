@@ -85,6 +85,20 @@ enum drv_cmd {
 	/* Range guards: all cmd values in [FIRST, LAST] enter the lazy-init prelude even if no specific case matches. */
 	DRV_CMD_INPUT_RANGE_FIRST = 0x12D,
 	DRV_CMD_INPUT_RANGE_LAST = 0x18F,
+
+	DRV_CMD_HWBP_INSTALL = 0x40,
+	DRV_CMD_HWBP_REMOVE = 0x41,
+	DRV_CMD_HWBP_SET_OVERRIDE = 0x42,
+	DRV_CMD_HWBP_GET_HITS = 0x43,
+	DRV_CMD_HWBP_CLEAR_ALL = 0x44,
+	DRV_CMD_HWBP_RANGE_FIRST = DRV_CMD_HWBP_INSTALL,
+	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_CLEAR_ALL,
+
+	DRV_CMD_PTE_HOOK_INSTALL = 0x48,
+	DRV_CMD_PTE_HOOK_REMOVE = 0x49,
+	DRV_CMD_PTE_HOOK_CLEAR_ALL = 0x4A,
+	DRV_CMD_PTE_HOOK_RANGE_FIRST = DRV_CMD_PTE_HOOK_INSTALL,
+	DRV_CMD_PTE_HOOK_RANGE_LAST = DRV_CMD_PTE_HOOK_CLEAR_ALL,
 };
 
 /* Fixed, compat-safe payload for DRV_CMD_FIND_PID_BY_PACKAGE.
@@ -143,6 +157,64 @@ struct drv_input_event {
 	__u32 type;      /* EV_KEY / EV_ABS / EV_SYN */
 	__u32 code;      /* ABS_MT_*, BTN_TOUCH, SYN_REPORT, ... */
 	__s32 value;     /* signed payload (tracking id may be -1) */
+};
+
+/* AArch64 per-thread hardware-breakpoint API. */
+#define DRV_HWBP_TYPE_EXECUTE 4u
+#define DRV_HWBP_LEN_EXECUTE 4u
+#define DRV_HWBP_MAX_OVERRIDES 10u
+#define DRV_HWBP_HIT_RING_SLOTS 32u
+
+enum drv_hwbp_reg_kind {
+	DRV_HWBP_REG_NONE = 0,
+	DRV_HWBP_REG_X = 1,
+	DRV_HWBP_REG_VLO = 2,
+	DRV_HWBP_REG_VHI = 3,
+	DRV_HWBP_REG_PC = 4,
+};
+
+struct drv_hwbp_reg_override {
+	__u32 kind;
+	__u32 index;
+	__u64 value;
+};
+
+struct drv_hwbp_install_req {
+	__s32 pid;
+	__u32 bp_len;
+	__u32 bp_type;
+	__u32 override_count;
+	__u64 addr;
+	__u32 pass_through;
+	__u32 _pad;
+	struct drv_hwbp_reg_override overrides[DRV_HWBP_MAX_OVERRIDES];
+};
+
+struct drv_hwbp_hit {
+	__u64 timestamp_ns;
+	__u64 pc;
+	__u64 sp;
+	__u64 pstate;
+	__u64 x[31];
+};
+
+/* AArch64 user-code return-stub API. TRAMPOLINE is reserved for v2. */
+enum drv_pte_hook_kind {
+	DRV_PTE_HOOK_CONST_U64 = 0,
+	DRV_PTE_HOOK_TRAMPOLINE = 1,
+	DRV_PTE_HOOK_CONST_FLOAT = 2,
+	DRV_PTE_HOOK_CONST_DOUBLE = 3,
+	DRV_PTE_HOOK_VOID_RET = 4,
+	DRV_PTE_HOOK_CONST_INT = DRV_PTE_HOOK_CONST_U64,
+};
+
+struct drv_pte_hook_install_req {
+	__s32 pid;
+	__u32 kind;
+	__u64 addr;
+	__u64 ret_value;
+	__u64 tramp_addr;
+	__u64 replace_addr;
 };
 
 #endif /* _DRIVER_UAPI_H */

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
-#
-# CI: build my-driver.ko against every supported Android KMI and compile the
-# Android arm64 client, probe, and benchmark against the shared UAPI.
-#
-# Each matrix entry runs inside the matching ghcr.io/ylarod/ddk image, which
-# ships a pre-extracted kernel tree at $KERNEL_SRC. The Makefile picks that
-# up automatically (no flags required).
-#
-# Artefact naming: my-driver-<kmi>.ko (one upload per matrix leg) plus a
-# userspace-arm64-v8a bundle.
+# CI: build my-driver.ko against every supported Android KMI and compile the Android arm64 client against the shared UAPI.
+# DDK matrix images expose their kernel tree through $KERNEL_SRC.
+# Artefacts: my-driver-<kmi>.ko plus the userspace-arm64-v8a client bundle.
 
 name: build
 
@@ -57,24 +50,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build out/client -j"$(nproc)"
 
-      - name: Build probe and benchmark
-        run: |
-          set -eux
-          cmake -S scripts -B out/scripts \
-            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-30 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build out/scripts -j"$(nproc)"
-
-      - name: Upload userspace tools
+      - name: Upload userspace client
         uses: actions/upload-artifact@v4
         with:
           name: userspace-arm64-v8a
-          path: |
-            out/client/my-driver-client
-            out/scripts/drv_probe
-            out/scripts/drv_bench
+          path: out/client/my-driver-client
           if-no-files-found: error
           retention-days: 30
 

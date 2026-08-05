@@ -2,6 +2,7 @@
 #include "Driver.h"
 #include "SensorResolve.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -11,7 +12,7 @@
 
 CDriver driver;
 
-CDriver::CDriver() : memory(*this), touch(*this), gyro(*this) {}
+CDriver::CDriver() : memory(*this), touch(*this), gyro(*this), hwbp(*this), pteHook(*this) {}
 
 CDriver::~CDriver() {
     close();
@@ -283,4 +284,102 @@ bool CDriver::Gyro::write(float dx, float dy, bool enable) {
     req.size = static_cast<uint64_t>(yb);
     req.extra = enable ? 1 : 0;
     return m_d.doIoctl(DRV_CMD_SENSOR_BIND, &req) >= 0;
+}
+
+static bool fill_hwbp_overrides(drv_hwbp_install_req& req, const std::vector<drv_hwbp_reg_override>& overrides) {
+    if (overrides.size() > DRV_HWBP_MAX_OVERRIDES) {
+        errno = E2BIG;
+        return false;
+    }
+    req.override_count = static_cast<uint32_t>(overrides.size());
+    for (uint32_t i = 0; i < req.override_count; i++) req.overrides[i] = overrides[i];
+    return true;
+}
+
+static bool target_pid_to_s32(pid_t pid, int32_t& out) {
+    if (pid <= 0 || static_cast<uint64_t>(pid) > 0x7fffffffULL) {
+        errno = EINVAL;
+        return false;
+    }
+    out = static_cast<int32_t>(pid);
+    return true;
+}
+
+bool CDriver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough, uint32_t bpType, uint32_t bpLen) {
+    drv_hwbp_install_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid) || !fill_hwbp_overrides(req, overrides)) return false;
+    req.addr = addr;
+    req.bp_type = bpType;
+    req.bp_len = bpLen;
+    req.pass_through = passThrough ? 1u : 0u;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_INSTALL, &req) >= 0;
+}
+
+bool CDriver::Hwbp::setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides) {
+    drv_hwbp_install_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid) || !fill_hwbp_overrides(req, overrides)) return false;
+    req.addr = addr;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_OVERRIDE, &req) >= 0;
+}
+
+bool CDriver::Hwbp::remove(uint64_t addr) {
+    drv_ioctl_req req{};
+    int32_t targetPid;
+    if (!target_pid_to_s32(m_d.m_targetPid, targetPid)) return false;
+    req.pid = static_cast<uint64_t>(targetPid);
+    req.addr = addr;
+    return m_d.doIoctl(DRV_CMD_HWBP_REMOVE, &req) >= 0;
+}
+
+bool CDriver::Hwbp::clearAll() {
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_CLEAR_ALL, nullptr) >= 0;
+}
+
+std::vector<drv_hwbp_hit> CDriver::Hwbp::getHits(uint64_t addr, size_t maxHits) {
+    if (maxHits > DRV_HWBP_HIT_RING_SLOTS) {
+        errno = E2BIG;
+        return {};
+    }
+    if (maxHits == 0) return {};
+    std::vector<drv_hwbp_hit> hits(maxHits);
+    drv_ioctl_req req{};
+    int32_t targetPid;
+    if (!target_pid_to_s32(m_d.m_targetPid, targetPid)) return {};
+    req.pid = static_cast<uint64_t>(targetPid);
+    req.addr = addr;
+    req.buf = reinterpret_cast<uint64_t>(hits.data());
+    req.size = hits.size() * sizeof(drv_hwbp_hit);
+    if (m_d.doIoctl(DRV_CMD_HWBP_GET_HITS, &req) < 0) return {};
+    if (req.size > hits.size() * sizeof(drv_hwbp_hit) || req.size % sizeof(drv_hwbp_hit) != 0) {
+        errno = EPROTO;
+        return {};
+    }
+    hits.resize(req.size / sizeof(drv_hwbp_hit));
+    return hits;
+}
+
+bool CDriver::PteHook::install(uint64_t addr, uint32_t kind, uint64_t value) {
+    drv_pte_hook_install_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
+    req.kind = kind;
+    req.addr = addr;
+    req.ret_value = value;
+    return m_d.doIoctlRaw(DRV_CMD_PTE_HOOK_INSTALL, &req) >= 0;
+}
+
+bool CDriver::PteHook::returnVoid(uint64_t addr) {
+    return install(addr, DRV_PTE_HOOK_VOID_RET, 0);
+}
+
+bool CDriver::PteHook::remove(uint64_t addr) {
+    drv_ioctl_req req{};
+    int32_t targetPid;
+    if (!target_pid_to_s32(m_d.m_targetPid, targetPid)) return false;
+    req.pid = static_cast<uint64_t>(targetPid);
+    req.addr = addr;
+    return m_d.doIoctl(DRV_CMD_PTE_HOOK_REMOVE, &req) >= 0;
+}
+
+bool CDriver::PteHook::clearAll() {
+    return m_d.doIoctlRaw(DRV_CMD_PTE_HOOK_CLEAR_ALL, nullptr) >= 0;
 }

@@ -21,10 +21,12 @@
 #include <driver/types.h>
 
 #include "comm.h"
+#include "hwbp.h"
 #include "kallsym.h"
 #include "lifecycle.h"
 #include "log.h"
 #include "memory.h"
+#include "user_hook.h"
 
 struct drv_state drv;
 
@@ -99,6 +101,11 @@ int __init init_driver(void) {
 		pr_drv_err("comm_warm_symbols failed: %d\n", ret);
 		return ret;
 	}
+
+	if (hwbp_init())
+		pr_drv_notice("hwbp commands disabled\n");
+	if (user_hook_init())
+		pr_drv_notice("pte-hook commands disabled\n");
 
 	ret = register_kprobe(&reboot_kp);
 	if (ret < 0) {

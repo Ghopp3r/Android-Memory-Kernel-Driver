@@ -38,16 +38,18 @@ obj-m += $(DRIVER_NAME).o
 # driver_install_fd_tw_func / etc.).
 # -----------------------------------------------------------------------------
 $(DRIVER_NAME)-objs := \
-	src/lifecycle.o       \
-	src/comm.o            \
-	src/memory.o          \
-	src/vfs_hijack.o      \
-	src/input_synth.o     \
-	src/sensor.o          \
-	src/harvest.o         \
-	src/hook_engine.o     \
-	src/uaccess_target.o  \
-	src/kallsym.o
+	src/lifecycle.o \
+	src/comm.o \
+	src/memory.o \
+	src/vfs_hijack.o \
+	src/input_synth.o \
+	src/sensor.o \
+	src/harvest.o \
+	src/hook_engine.o \
+	src/uaccess_target.o \
+	src/kallsym.o \
+	src/hwbp.o \
+	src/user_hook.o
 
 ifeq ($(HIDE_KGSL),1)
 $(DRIVER_NAME)-objs += src/stealth.o

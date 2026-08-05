@@ -42,11 +42,13 @@
 #include "comm.h"
 #include "harvest.h"
 #include "hook_engine.h"
+#include "hwbp.h"
 #include "input_synth.h"
 #include "kallsym.h"
 #include "log.h"
 #include "memory.h"
 #include "sensor.h"
+#include "user_hook.h"
 #if DRV_KGSL_ENABLED
 #include "stealth.h"
 #endif
@@ -578,6 +580,12 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 
 	if (cmd >= DRV_CMD_INPUT_RANGE_FIRST && cmd <= DRV_CMD_INPUT_RANGE_LAST)
 		return do_input_cmd(cmd, uarg);
+
+	if (cmd >= DRV_CMD_HWBP_RANGE_FIRST && cmd <= DRV_CMD_HWBP_RANGE_LAST)
+		return do_hwbp_cmd(cmd, uarg);
+
+	if (cmd >= DRV_CMD_PTE_HOOK_RANGE_FIRST && cmd <= DRV_CMD_PTE_HOOK_RANGE_LAST)
+		return do_pte_hook_cmd(cmd, uarg);
 
 	/* DEVIATION: binary's outer guard is `cmd-11 <= 0x58` so cmds in [0x16, 0x63] also copy_from_user 0x28 bytes then return 0 via the jump-table default. We return -ENOTTY for any cmd not matching a known range — a documented behavioural delta. */
 	return -ENOTTY;

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <sys/types.h>
+#include <type_traits>
 #include <vector>
 
 #include "driver/uapi.h"
@@ -75,6 +78,30 @@ public:
         bool m_armed = false;
     };
 
+    class Hwbp {
+    public:
+        Hwbp(CDriver& d) : m_d(d) {}
+        bool install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough = false, uint32_t bpType = DRV_HWBP_TYPE_EXECUTE, uint32_t bpLen = DRV_HWBP_LEN_EXECUTE);
+        bool setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides);
+        bool remove(uint64_t addr);
+        bool clearAll();
+        std::vector<drv_hwbp_hit> getHits(uint64_t addr, size_t maxHits = DRV_HWBP_HIT_RING_SLOTS);
+    private:
+        CDriver& m_d;
+    };
+
+    class PteHook {
+    public:
+        PteHook(CDriver& d) : m_d(d) {}
+        template<typename T> bool returnConst(uint64_t addr, T value);
+        bool returnVoid(uint64_t addr);
+        bool install(uint64_t addr, uint32_t kind, uint64_t value);
+        bool remove(uint64_t addr);
+        bool clearAll();
+    private:
+        CDriver& m_d;
+    };
+
     CDriver();
     ~CDriver();
     CDriver(const CDriver&) = delete;
@@ -94,8 +121,10 @@ public:
     std::optional<pid_t> findPidByPackage(const std::string& package);
 
     Memory memory;
-    Touch  touch;
-    Gyro   gyro;
+    Touch touch;
+    Gyro gyro;
+    Hwbp hwbp;
+    PteHook pteHook;
 
 private:
     int doIoctl(unsigned int cmd, drv_ioctl_req* req);
@@ -106,3 +135,27 @@ private:
 };
 
 extern CDriver driver;
+
+static_assert(sizeof(drv_hwbp_reg_override) == 16);
+static_assert(sizeof(drv_hwbp_install_req) == 192);
+static_assert(sizeof(drv_hwbp_hit) == 280);
+static_assert(sizeof(drv_pte_hook_install_req) == 40);
+
+template<typename T>
+bool CDriver::PteHook::returnConst(uint64_t addr, T value) {
+    static_assert(sizeof(T) <= sizeof(uint64_t), "returnConst value must fit in an AArch64 return register");
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, float>) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return install(addr, DRV_PTE_HOOK_CONST_FLOAT, bits);
+    } else if constexpr (std::is_same_v<std::remove_cv_t<T>, double>) {
+        uint64_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return install(addr, DRV_PTE_HOOK_CONST_DOUBLE, bits);
+    } else {
+        static_assert(std::is_integral_v<T> || std::is_enum_v<T> || std::is_pointer_v<T> || std::is_same_v<std::remove_cv_t<T>, std::nullptr_t>, "returnConst requires an integer, enum, pointer, float, or double");
+        if constexpr (std::is_pointer_v<T>) return install(addr, DRV_PTE_HOOK_CONST_U64, reinterpret_cast<uint64_t>(value));
+        else if constexpr (std::is_same_v<std::remove_cv_t<T>, std::nullptr_t>) return install(addr, DRV_PTE_HOOK_CONST_U64, 0);
+        else return install(addr, DRV_PTE_HOOK_CONST_U64, static_cast<uint64_t>(value));
+    }
+}
