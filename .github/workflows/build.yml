@@ -116,8 +116,18 @@ jobs:
         working-directory: driver
         run: |
           set -eux
-          make -j"$(nproc)"
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee build.log
           ls -la "${DRIVER_NAME}.ko"
+
+      - name: Upload kernel build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.kmi }}
+          path: driver/build.log
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Verify default concealment feature gates
         working-directory: driver
