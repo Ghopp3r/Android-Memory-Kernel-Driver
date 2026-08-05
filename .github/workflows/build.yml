@@ -116,7 +116,15 @@ jobs:
         working-directory: driver
         run: |
           set -eux
-          make -j"$(nproc)"
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            while IFS= read -r line; do
+              echo "::error title=kernel compiler::$line"
+            done < build.log
+            exit "$rc"
+          fi
           ls -la "${DRIVER_NAME}.ko"
 
       - name: Verify default concealment feature gates
