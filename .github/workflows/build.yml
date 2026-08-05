@@ -115,18 +115,8 @@ jobs:
       - name: Build ${{ env.DRIVER_NAME }}.ko
         working-directory: driver
         run: |
-          set -uxo pipefail
-          set +e
-          make -j"$(nproc)" 2>&1 | tee build.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            grep -E 'fatal error|error:|warning:|undefined reference|No rule to make target' build.log | while IFS= read -r line; do
-              echo "::error title=kernel compiler::$line"
-            done || true
-            tail -n 40 build.log
-            exit "$rc"
-          fi
+          set -eux
+          make -j"$(nproc)"
           ls -la "${DRIVER_NAME}.ko"
 
       - name: Verify default concealment feature gates
