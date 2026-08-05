@@ -129,6 +129,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+      - name: Publish kernel build error
+        if: failure()
+        working-directory: driver
+        run: |
+          {
+            echo '### Kernel compiler output'
+            echo '```text'
+            cat build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Verify default concealment feature gates
         working-directory: driver
         run: |
