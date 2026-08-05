@@ -16,6 +16,15 @@ The GitHub workflow builds one module against each supported Android KMI and com
 
 Only `android15-6.6` has current device runtime coverage (NP05J / Android 15 / kernel 6.6.56). The other legs are compile-validated by Actions.
 
+## Latest validation
+
+| Check | Environment | Result |
+| --- | --- | --- |
+| Build matrix | [Actions #71](https://github.com/Ghopp3r/Android-Memory-Kernel-Driver/actions/runs/31043129620) | 7 kernel targets and the arm64 client passed |
+| Core runtime probe | NP05J, Android 15, kernel 6.6.56 | 7/7 passed: memory R/W, PTE install/remove, HWBP install/get-hits/remove |
+| Hook stress benchmark | Same device and fresh 6.6 artifact | Completed PTE update/remove and HWBP install/set loops |
+| Kernel log after tests | Same boot session | No driver errors, kernel BUG, Oops, or panic |
+
 ## Build
 
 The repository intentionally does not build kernel code on the host. Use GitHub Actions or the matching DDK image:
