@@ -2,7 +2,6 @@
 #include "Driver.h"
 #include "SensorResolve.h"
 
-#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -18,10 +17,7 @@ CDriver::~CDriver() {
     close();
 }
 
-// Magic-handshake bootstrap: __arm64_sys_reboot kprobe pre-handler matches
-// inner_regs[0]==MAGIC1 && inner_regs[1]==MAGIC2 and writes the freshly-installed
-// anon-inode fd into the userspace pointer at inner_regs[3]. Reachable from adb
-// shell uid; bionic seccomp blocks __NR_reboot for Zygote-forked app uids.
+// The reboot kprobe recognizes the magic pair and returns a new anonymous-inode fd through the fourth syscall argument.
 bool CDriver::open() {
     if (m_fd >= 0) return true;
     int newFd = -1;
@@ -75,16 +71,14 @@ std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
 }
 
 std::optional<pid_t> CDriver::findPidByPackage(const std::string& package) {
-    if (package.empty() || package.size() > DRV_PACKAGE_NAME_MAX ||
-        package.find('\0') != std::string::npos) {
+    if (package.empty() || package.size() > DRV_PACKAGE_NAME_MAX || package.find('\0') != std::string::npos) {
         errno = package.size() > DRV_PACKAGE_NAME_MAX ? ENAMETOOLONG : EINVAL;
         return std::nullopt;
     }
 
     drv_find_pid_req req{};
     std::memcpy(req.package, package.data(), package.size());
-    if (doIoctlRaw(DRV_CMD_FIND_PID_BY_PACKAGE, &req) < 0)
-        return std::nullopt;
+    if (doIoctlRaw(DRV_CMD_FIND_PID_BY_PACKAGE, &req) < 0) return std::nullopt;
     if (req.pid <= 0) {
         errno = ESRCH;
         return std::nullopt;
@@ -120,8 +114,7 @@ bool CDriver::Memory::writeVmap(uint64_t addr, const void* in, size_t len) {
     return writeChunked(DRV_CMD_WRITE_MEM_VMAP, addr, in, len);
 }
 
-bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr,
-                                   const void* in, size_t len) {
+bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr, const void* in, size_t len) {
     uint64_t source = reinterpret_cast<uint64_t>(in);
     size_t remain = len;
 
@@ -129,24 +122,20 @@ bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr,
         errno = EFAULT;
         return false;
     }
-    if (static_cast<uint64_t>(len) > UINT64_MAX - addr ||
-        static_cast<uint64_t>(len) > UINT64_MAX - source) {
+    if (static_cast<uint64_t>(len) > UINT64_MAX - addr || static_cast<uint64_t>(len) > UINT64_MAX - source) {
         errno = EOVERFLOW;
         return false;
     }
 
     do {
-        const size_t chunk = remain > DRV_MEM_CMD_MAX_SIZE
-                                 ? static_cast<size_t>(DRV_MEM_CMD_MAX_SIZE)
-                                 : remain;
+        const size_t chunk = remain > DRV_MEM_CMD_MAX_SIZE ? static_cast<size_t>(DRV_MEM_CMD_MAX_SIZE) : remain;
         drv_ioctl_req req{};
         req.pid = static_cast<uint32_t>(m_d.m_targetPid);
         req.addr = addr;
         req.buf = source;
         req.size = chunk;
 
-        if (m_d.doIoctl(cmd, &req) < 0 || req.size != chunk)
-            return false;
+        if (m_d.doIoctl(cmd, &req) < 0 || req.size != chunk) return false;
 
         remain -= chunk;
         addr += chunk;
@@ -210,9 +199,7 @@ std::vector<VmaInfo> CDriver::Memory::dumpVmas() {
     return entries;
 }
 
-// Kernel comm.c does copy_from_user(&tr, arg, sizeof(drv_touch_inject_req)) —
-// pass &tr raw via doIoctlRaw. The legacy &drv_ioctl_req path stuffed garbage
-// pointer bits into x/y as the kernel read 16 bytes from the wrong struct.
+// Touch commands pass drv_touch_inject_req directly because the kernel copies that exact 16-byte payload.
 bool CDriver::Touch::down(int slot, int x, int y, int pressure) {
     drv_touch_inject_req tr{};
     tr.slot_id = static_cast<uint32_t>(slot);
@@ -236,9 +223,7 @@ bool CDriver::Touch::up(int slot) {
     return m_d.doIoctlRaw(DRV_CMD_TOUCH_UP, &tr) >= 0;
 }
 
-// Repeating the same offset/layout bind is idempotent kernel-side; a different
-// bind is rejected. isArmed() flips on the first successful registration so
-// the UI can disable gyro features when libsensorservice has no matching symbol.
+// Repeating the same offset/layout bind is idempotent; a different bind is rejected by the kernel.
 bool CDriver::Gyro::bind(uint64_t probeOffset, int layoutProfile) {
     drv_ioctl_req req{};
     req.pid = 100;
@@ -255,21 +240,14 @@ bool CDriver::Gyro::bindAuto() {
         uint32_t layout;
     };
     static const Candidate kCandidates[] = {
-        {
-            "_ZN7android8hardware7sensors14implementation20convertToSensorEventERKN4aidl7android8hardware7sensors5EventEP15sensors_event_t",
-            DRV_SENSOR_LAYOUT_AIDL_V1,
-        },
-        {
-            "_ZN7android8hardware7sensors4V1_014implementation20convertToSensorEventERKNS2_5EventEP15sensors_event_t",
-            DRV_SENSOR_LAYOUT_HIDL_V1,
-        },
+        { "_ZN7android8hardware7sensors14implementation20convertToSensorEventERKN4aidl7android8hardware7sensors5EventEP15sensors_event_t", DRV_SENSOR_LAYOUT_AIDL_V1 },
+        { "_ZN7android8hardware7sensors4V1_014implementation20convertToSensorEventERKNS2_5EventEP15sensors_event_t", DRV_SENSOR_LAYOUT_HIDL_V1 },
     };
 
     for (const Candidate& candidate : kCandidates) {
         const char* symbol = candidate.symbol;
         uint64_t off = GetSymbolOffset("/system/lib64/libsensorservice.so", &symbol, 1, nullptr);
-        if (off)
-            return bind(off, candidate.layout);
+        if (off) return bind(off, candidate.layout);
     }
     return false;
 }

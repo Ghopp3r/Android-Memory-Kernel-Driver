@@ -43,15 +43,19 @@ The client opens the fd lazily. `findPidByPackage()` matches the complete `argv[
 
 `driver.hwbp` installs an AArch64 execute breakpoint for one target thread. It supports X0..X30, PC, and SIMD V0..V31 low/high 64-bit overrides, a 32-entry hit ring, idempotent override updates, and explicit remove/clear operations. v1 pass-through accepts only fall-through instructions; branches, returns, exceptions, watchpoints, compat tasks, and non-executable mappings return an error. `getHits()` captures raw entry registers before overrides. Tracker identity uses the kernel PID object and target `mm`, preventing numeric PID reuse and `execve()` redirection.
 
+The HWBP commands are `INSTALL=0x40`, `REMOVE=0x41`, `SET_OVERRIDE=0x42`, `GET_HITS=0x43`, and `CLEAR_ALL=0x44`. `passThrough=false` is an early return and is valid only at a function entry. `passThrough=true` cannot be combined with a PC override; if the trapped instruction faults or never reaches `addr+4`, remove and reinstall the tracker before reuse.
+
 `driver.pteHook` installs a 32-byte constant-return stub in a private executable mapping. `returnConst<T>()` supports integral, enum, pointer, float, and double values; `returnVoid()` emits only a return. The trampoline kind is reserved for a future ABI. The stub starts with a BTI-compatible landing instruction, validates one complete same-page private VMA, and records expected patched bytes. Reinstall, remove, and global `clearAll()` refuse to overwrite a changed function and report restoration errors.
+
+The PTE-hook commands are `INSTALL=0x48`, `REMOVE=0x49`, and `CLEAR_ALL=0x4A`. The fixed v1 kind values are `CONST_U64=0`, reserved `TRAMPOLINE=1`, `CONST_FLOAT=2`, `CONST_DOUBLE=3`, and `VOID_RET=4`. The caller must ensure that the entry has 32 replaceable bytes; the driver validates the mapping, not function boundaries.
 
 Both APIs use access to the trusted driver fd as their permission boundary. They do not stop target threads: callers must quiesce all threads sharing the target `mm` while installing or removing a 32-byte patch. Forked private COW mappings and remapping are outside the v1 registry model. Closing the C++ client does not clear global hooks.
 
 ## Benchmark snapshot
 
-These are historical single-device measurements on NP05J / Android 15 / kernel 6.6.56 and are not portability or safety guarantees. Driver/process_vm/procmem read medians in microseconds were 4 B `0.88/1.50/1.53`, 16 B `0.87/1.50/1.61`, 256 B `0.90/1.54/1.75`, 4 KiB `1.41/2.05/2.36`, 16 KiB `3.35/4.76/6.79`, 64 KiB `14.7/19.0/27.8`, 1 MiB `223/270/418`, and 4 MiB `910/992/1683`. Driver/process_vm write medians were 0.87/1.52 microseconds for 4 B, 1.28/1.94 for 4 KiB, 15.4/19.2 for 64 KiB, and 222/269 for 1 MiB.
+These are historical single-device measurements on NP05J / Android 15 / kernel 6.6.56 and are not portability or safety guarantees. Driver/process_vm/procmem mean per-operation read times in microseconds were 4 B `0.88/1.50/1.53`, 16 B `0.87/1.50/1.61`, 256 B `0.90/1.54/1.75`, 4 KiB `1.41/2.05/2.36`, 16 KiB `3.35/4.76/6.79`, 64 KiB `14.7/19.0/27.8`, 1 MiB `223/270/418`, and 4 MiB `910/992/1683`. Driver/process_vm mean write times were 0.87/1.52 microseconds for 4 B, 1.28/1.94 for 4 KiB, 15.4/19.2 for 64 KiB, and 222/269 for 1 MiB.
 
-`MULTI_READ` sequential/driver medians were 7.0/2.2 microseconds for 8 entries, 27.9/4.7 for 32, 114/15.0 for 128, and 441/55.1 for 512. Historical hook measurements were PTE 5/5/6 microseconds p50/p95/p99 (mostly reinstall/update), cold HWBP install 13/70/736, and `SET_OVERRIDE` 0.78/0.78/0.78. The old harness was fail-open in places, so these are reference measurements only.
+`MULTI_READ` sequential/driver mean batch times were 7.0/2.2 microseconds for 8 entries, 27.9/4.7 for 32, 114/15.0 for 128, and 441/55.1 for 512. Historical hook measurements were PTE 5/5/6 microseconds p50/p95/p99 (mostly reinstall/update), cold HWBP install 13/70/736, and `SET_OVERRIDE` 0.78/0.78/0.78. The old hook harness was fail-open in places and predates the current hardening, so its numbers are references rather than current guarantees.
 
 ## Layout
 

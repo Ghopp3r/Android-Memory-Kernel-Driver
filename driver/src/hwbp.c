@@ -493,6 +493,8 @@ static long hwbp_install(void __user *arg) {
 	attr.bp_len = DRV_HWBP_LEN_EXECUTE;
 	attr.bp_type = HW_BREAKPOINT_X;
 	attr.sample_period = 1;
+	attr.exclude_kernel = 1;
+	attr.exclude_hv = 1;
 	tracker->bp = drv_call_register_user_hw_bp(drv_register_user_hw_bp_ptr, &attr, hwbp_handler, tracker, task);
 	if (IS_ERR_OR_NULL(tracker->bp)) {
 		rc = tracker->bp ? PTR_ERR(tracker->bp) : -EIO;
@@ -542,6 +544,8 @@ static long hwbp_set_override(void __user *arg) {
 		rc = -ENOENT;
 	else if (tracker->mm != mm)
 		rc = -ESTALE;
+	else if (tracker->pass_through && hwbp_request_has_pc_override(&req))
+		rc = -EINVAL;
 	else {
 		hwbp_set_overrides(tracker, &req);
 		rc = 0;
