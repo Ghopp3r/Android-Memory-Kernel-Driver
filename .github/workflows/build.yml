@@ -139,6 +139,12 @@ jobs:
             cat build.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          error=$(tail -c 900 build.log | tr '\n' ' ' | tr -s ' ')
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "$(jq -n --arg context "ci/kernel-error/${{ matrix.kmi }}" --arg description "$error" '{state:"failure", context:$context, description:$description}')"
 
       - name: Verify default concealment feature gates
         working-directory: driver
