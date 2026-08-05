@@ -8,6 +8,7 @@
 #include <linux/list.h>
 #include <linux/limits.h>
 #include <linux/mm.h>
+#include <linux/mmap_lock.h>
 #include <linux/mutex.h>
 #include <linux/perf_event.h>
 #include <linux/pid.h>
@@ -25,6 +26,7 @@
 #include <asm/compat.h>
 #include <asm/cpufeature.h>
 #include <asm/fpsimd.h>
+#include <asm/memory.h>
 #include <asm/processor.h>
 #include <asm/uaccess.h>
 

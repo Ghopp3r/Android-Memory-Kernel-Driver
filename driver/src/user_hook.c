@@ -38,6 +38,7 @@
 #define USER_HOOK_PATCH_BYTES 32u
 #define USER_HOOK_MAX_INSNS (USER_HOOK_PATCH_BYTES / sizeof(u32))
 #define ARM64_BTI_C 0xD503245Fu
+#define ARM64_NOP 0xD503201Fu
 #define ARM64_RET_X30 0xD65F03C0u
 
 static bool is_bti(u32 insn) {
@@ -121,7 +122,10 @@ static int build_patch(u32 out[USER_HOOK_MAX_INSNS], const u32 original[USER_HOO
 		return -EOPNOTSUPP;
 	}
 
-	return count <= (int)USER_HOOK_MAX_INSNS ? 0 : -E2BIG;
+	if (count > (int)USER_HOOK_MAX_INSNS) return -E2BIG;
+	while (count < (int)USER_HOOK_MAX_INSNS)
+		out[count++] = ARM64_NOP;
+	return 0;
 }
 
 static int normalize_addr(u64 raw, unsigned long *out) {
@@ -144,7 +148,7 @@ static int validate_vma(struct mm_struct *mm, unsigned long addr) {
 	mmap_read_lock(mm);
 	vma = find_vma(mm, addr);
 	if (!vma || addr < vma->vm_start || end > vma->vm_end) rc = -EFAULT;
-	else if (!(vma->vm_flags & VM_EXEC) || !(vma->vm_flags & VM_MAYWRITE)) rc = -EACCES;
+	else if (!(vma->vm_flags & VM_EXEC)) rc = -EACCES;
 	else if (vma->vm_flags & (VM_SHARED | VM_IO | VM_PFNMAP | VM_MIXEDMAP)) rc = -EOPNOTSUPP;
 	mmap_read_unlock(mm);
 	return rc;
@@ -215,17 +219,16 @@ static int restore_slot_locked(struct user_hook_slot *slot, bool *mm_dead) {
 		*mm_dead = true;
 		return 0;
 	}
-	if (!slot->expected_valid) {
-		rc = -EUCLEAN;
-		goto out;
-	}
-
 	rc = validate_vma(slot->mm, slot->addr);
 	if (rc) goto out;
 	rc = copy_remote_locked(slot->mm, slot->addr, current, false);
 	if (rc) goto out;
 	if (memcmp(current, slot->original, USER_HOOK_PATCH_BYTES) == 0) {
 		rc = 0;
+		goto out;
+	}
+	if (!slot->expected_valid) {
+		rc = -EUCLEAN;
 		goto out;
 	}
 	if (memcmp(current, slot->expected, USER_HOOK_PATCH_BYTES) != 0) {
@@ -285,8 +288,11 @@ static int resolve_tgid_pid(pid_t nr, struct pid **out_pid) {
 	requested = find_get_pid(nr);
 	if (!requested) return -ESRCH;
 	task = get_pid_task(requested, PIDTYPE_PID);
+	if (!task) {
+		*out_pid = requested;
+		return 0;
+	}
 	put_pid(requested);
-	if (!task) return -ESRCH;
 	tgid = get_task_pid(task, PIDTYPE_TGID);
 	put_task_struct(task);
 	if (!tgid) return -ESRCH;

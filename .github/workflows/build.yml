@@ -115,10 +115,11 @@ jobs:
       - name: Build ${{ env.DRIVER_NAME }}.ko
         working-directory: driver
         run: |
-          set -eux
-          set -o pipefail
+          set -uxo pipefail
+          set +e
           make -j"$(nproc)" 2>&1 | tee build.log
           rc=${PIPESTATUS[0]}
+          set -e
           if [ "$rc" -ne 0 ]; then
             while IFS= read -r line; do
               echo "::error title=kernel compiler::$line"
