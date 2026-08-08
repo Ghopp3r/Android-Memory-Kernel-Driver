@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// Demo client for my-driver.ko. Exercises every sub-API of CDriver:
+// Demo client for my-driver.ko. Exercises every sub-API of Driver:
 //   driver.memory.{read,write,readVmap,writeVmap,getModuleBase,getTls,...}
 //   driver.touch.{down,move,up}
 //   driver.gyro.{bind,bindAuto,write,isArmed}
@@ -22,7 +22,7 @@
 #include "Driver.h"
 
 constexpr const char* kDefaultPackage = "com.example.game";
-constexpr const char* kDefaultModule  = "libUE4.so";
+constexpr const char* kDefaultModule = "libUE4.so";
 
 static std::string prompt(const char* label) {
     std::printf("%s", label);
@@ -80,8 +80,7 @@ int main() {
         pid = *found;
         std::printf("package: %s -> pid: %d\n", targetInput.c_str(), static_cast<int>(pid));
     } else {
-        std::fprintf(stderr, "target not found: %s (errno=%d: %s)\n",
-                     targetInput.c_str(), errno, std::strerror(errno));
+        std::fprintf(stderr, "target not found: %s (errno=%d: %s)\n", targetInput.c_str(), errno, std::strerror(errno));
         return 1;
     }
     driver.setTarget(pid);

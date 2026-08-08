@@ -9,16 +9,16 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-CDriver driver;
+Driver driver;
 
-CDriver::CDriver() : memory(*this), touch(*this), gyro(*this), hwbp(*this), pteHook(*this) {}
+Driver::Driver() : memory(*this), touch(*this), gyro(*this), hwbp(*this), pteHook(*this), hidePid(*this) {}
 
-CDriver::~CDriver() {
+Driver::~Driver() {
     close();
 }
 
 // The reboot kprobe recognizes the magic pair and returns a new anonymous-inode fd through the fourth syscall argument.
-bool CDriver::open() {
+bool Driver::open() {
     if (m_fd >= 0) return true;
     int newFd = -1;
     ::syscall(SYS_reboot, DRIVER_REBOOT_MAGIC1, DRIVER_REBOOT_MAGIC2, 0L, &newFd);
@@ -26,43 +26,43 @@ bool CDriver::open() {
     return false;
 }
 
-void CDriver::close() {
+void Driver::close() {
     if (m_fd >= 0) { ::close(m_fd); m_fd = -1; }
 }
 
-int CDriver::doIoctl(unsigned int cmd, drv_ioctl_req* req) {
+int Driver::doIoctl(unsigned int cmd, drv_ioctl_req* req) {
     if (m_fd < 0 && !open()) return -1;
     return ::ioctl(m_fd, cmd, req);
 }
 
-int CDriver::doIoctlRaw(unsigned int cmd, void* arg) {
+int Driver::doIoctlRaw(unsigned int cmd, void* arg) {
     if (m_fd < 0 && !open()) return -1;
     return ::ioctl(m_fd, cmd, arg);
 }
 
-bool CDriver::installHooks() {
+bool Driver::installHooks() {
     drv_ioctl_req req{};
     return doIoctl(DRV_CMD_INSTALL_HOOKS, &req) >= 0;
 }
 
-bool CDriver::tearDown() {
+bool Driver::tearDown() {
     drv_ioctl_req req{};
     return doIoctl(DRV_CMD_TEAR_DOWN, &req) >= 0;
 }
 
-bool CDriver::installSigsegvSuppress() {
+bool Driver::installSigsegvSuppress() {
     drv_ioctl_req req{};
     return doIoctl(DRV_CMD_INSTALL_SIGSEGV_SUPPRESS, &req) >= 0;
 }
 
-bool CDriver::hideKgsl() {
+bool Driver::hideKgsl() {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_targetPid);
     if (doIoctl(DRV_CMD_HIDE_KGSL, &req) < 0) return false;
     return static_cast<int64_t>(req.size) >= 0;
 }
 
-std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
+std::optional<pid_t> Driver::findTaskByComm(const std::string& comm) {
     drv_ioctl_req req{};
     req.addr = reinterpret_cast<uint64_t>(comm.c_str());
     if (doIoctl(DRV_CMD_FIND_TASK_BY_COMM, &req) < 0) return std::nullopt;
@@ -70,7 +70,7 @@ std::optional<pid_t> CDriver::findTaskByComm(const std::string& comm) {
     return static_cast<pid_t>(req.size);
 }
 
-std::optional<pid_t> CDriver::findPidByPackage(const std::string& package) {
+std::optional<pid_t> Driver::findPidByPackage(const std::string& package) {
     if (package.empty() || package.size() > DRV_PACKAGE_NAME_MAX || package.find('\0') != std::string::npos) {
         errno = package.size() > DRV_PACKAGE_NAME_MAX ? ENAMETOOLONG : EINVAL;
         return std::nullopt;
@@ -86,7 +86,7 @@ std::optional<pid_t> CDriver::findPidByPackage(const std::string& package) {
     return static_cast<pid_t>(req.pid);
 }
 
-bool CDriver::Memory::read(uint64_t addr, void* out, size_t len) {
+bool Driver::Memory::read(uint64_t addr, void* out, size_t len) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);
     req.addr = addr;
@@ -96,11 +96,11 @@ bool CDriver::Memory::read(uint64_t addr, void* out, size_t len) {
     return req.size == len;
 }
 
-bool CDriver::Memory::write(uint64_t addr, const void* in, size_t len) {
+bool Driver::Memory::write(uint64_t addr, const void* in, size_t len) {
     return writeChunked(DRV_CMD_WRITE_MEM_LINEAR, addr, in, len);
 }
 
-bool CDriver::Memory::readVmap(uint64_t addr, void* out, size_t len) {
+bool Driver::Memory::readVmap(uint64_t addr, void* out, size_t len) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);
     req.addr = addr;
@@ -110,11 +110,11 @@ bool CDriver::Memory::readVmap(uint64_t addr, void* out, size_t len) {
     return req.size == len;
 }
 
-bool CDriver::Memory::writeVmap(uint64_t addr, const void* in, size_t len) {
+bool Driver::Memory::writeVmap(uint64_t addr, const void* in, size_t len) {
     return writeChunked(DRV_CMD_WRITE_MEM_VMAP, addr, in, len);
 }
 
-bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr, const void* in, size_t len) {
+bool Driver::Memory::writeChunked(unsigned int cmd, uint64_t addr, const void* in, size_t len) {
     uint64_t source = reinterpret_cast<uint64_t>(in);
     size_t remain = len;
 
@@ -145,7 +145,7 @@ bool CDriver::Memory::writeChunked(unsigned int cmd, uint64_t addr, const void* 
     return true;
 }
 
-std::optional<uint64_t> CDriver::Memory::getModuleBase(const std::string& name) {
+std::optional<uint64_t> Driver::Memory::getModuleBase(const std::string& name) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);
     req.addr = reinterpret_cast<uint64_t>(name.c_str());
@@ -154,7 +154,7 @@ std::optional<uint64_t> CDriver::Memory::getModuleBase(const std::string& name) 
     return req.size;
 }
 
-std::optional<uint64_t> CDriver::Memory::getTls() {
+std::optional<uint64_t> Driver::Memory::getTls() {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);
     if (m_d.doIoctl(DRV_CMD_GET_TLS, &req) < 0 || req.size == 0)
@@ -162,7 +162,7 @@ std::optional<uint64_t> CDriver::Memory::getTls() {
     return req.size;
 }
 
-std::optional<uint64_t> CDriver::Memory::readVmaCookie(uint64_t addr) {
+std::optional<uint64_t> Driver::Memory::readVmaCookie(uint64_t addr) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint32_t>(m_d.m_targetPid);
     req.addr = addr;
@@ -170,7 +170,7 @@ std::optional<uint64_t> CDriver::Memory::readVmaCookie(uint64_t addr) {
     return req.size;
 }
 
-std::vector<uint64_t> CDriver::Memory::multiRead(const std::vector<uint64_t>& addrs) {
+std::vector<uint64_t> Driver::Memory::multiRead(const std::vector<uint64_t>& addrs) {
     std::vector<uint64_t> out(addrs.size(), 0);
     if (addrs.empty()) return out;
     std::vector<drv_multi_read_req> descs(addrs.size());
@@ -187,7 +187,7 @@ std::vector<uint64_t> CDriver::Memory::multiRead(const std::vector<uint64_t>& ad
     return out;
 }
 
-std::vector<VmaInfo> CDriver::Memory::dumpVmas() {
+std::vector<VmaInfo> Driver::Memory::dumpVmas() {
     constexpr size_t kCap = 1024;
     std::vector<VmaInfo> entries(kCap);
     drv_ioctl_req req{};
@@ -200,7 +200,7 @@ std::vector<VmaInfo> CDriver::Memory::dumpVmas() {
 }
 
 // Touch commands pass drv_touch_inject_req directly because the kernel copies that exact 16-byte payload.
-bool CDriver::Touch::down(int slot, int x, int y, int pressure) {
+bool Driver::Touch::down(int slot, int x, int y, int pressure) {
     drv_touch_inject_req tr{};
     tr.slot_id = static_cast<uint32_t>(slot);
     tr.x = static_cast<uint32_t>(x);
@@ -209,7 +209,7 @@ bool CDriver::Touch::down(int slot, int x, int y, int pressure) {
     return m_d.doIoctlRaw(DRV_CMD_TOUCH_DOWN, &tr) >= 0;
 }
 
-bool CDriver::Touch::move(int slot, int x, int y) {
+bool Driver::Touch::move(int slot, int x, int y) {
     drv_touch_inject_req tr{};
     tr.slot_id = static_cast<uint32_t>(slot);
     tr.x = static_cast<uint32_t>(x);
@@ -217,14 +217,14 @@ bool CDriver::Touch::move(int slot, int x, int y) {
     return m_d.doIoctlRaw(DRV_CMD_TOUCH_MOVE, &tr) >= 0;
 }
 
-bool CDriver::Touch::up(int slot) {
+bool Driver::Touch::up(int slot) {
     drv_touch_inject_req tr{};
     tr.slot_id = static_cast<uint32_t>(slot);
     return m_d.doIoctlRaw(DRV_CMD_TOUCH_UP, &tr) >= 0;
 }
 
 // Repeating the same offset/layout bind is idempotent; a different bind is rejected by the kernel.
-bool CDriver::Gyro::bind(uint64_t probeOffset, int layoutProfile) {
+bool Driver::Gyro::bind(uint64_t probeOffset, int layoutProfile) {
     drv_ioctl_req req{};
     req.pid = 100;
     req.addr = probeOffset;
@@ -234,7 +234,7 @@ bool CDriver::Gyro::bind(uint64_t probeOffset, int layoutProfile) {
     return true;
 }
 
-bool CDriver::Gyro::bindAuto() {
+bool Driver::Gyro::bindAuto() {
     struct Candidate {
         const char* symbol;
         uint32_t layout;
@@ -252,7 +252,7 @@ bool CDriver::Gyro::bindAuto() {
     return false;
 }
 
-bool CDriver::Gyro::write(float dx, float dy, bool enable) {
+bool Driver::Gyro::write(float dx, float dy, bool enable) {
     uint32_t xb, yb;
     std::memcpy(&xb, &dx, sizeof(xb));
     std::memcpy(&yb, &dy, sizeof(yb));
@@ -283,7 +283,7 @@ static bool target_pid_to_s32(pid_t pid, int32_t& out) {
     return true;
 }
 
-bool CDriver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough, uint32_t bpType, uint32_t bpLen) {
+bool Driver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough, uint32_t bpType, uint32_t bpLen) {
     drv_hwbp_install_req req{};
     if (!target_pid_to_s32(m_d.m_targetPid, req.pid) || !fill_hwbp_overrides(req, overrides)) return false;
     req.addr = addr;
@@ -293,14 +293,14 @@ bool CDriver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_overri
     return m_d.doIoctlRaw(DRV_CMD_HWBP_INSTALL, &req) >= 0;
 }
 
-bool CDriver::Hwbp::setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides) {
+bool Driver::Hwbp::setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides) {
     drv_hwbp_install_req req{};
     if (!target_pid_to_s32(m_d.m_targetPid, req.pid) || !fill_hwbp_overrides(req, overrides)) return false;
     req.addr = addr;
     return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_OVERRIDE, &req) >= 0;
 }
 
-bool CDriver::Hwbp::remove(uint64_t addr) {
+bool Driver::Hwbp::remove(uint64_t addr) {
     drv_ioctl_req req{};
     int32_t targetPid;
     if (!target_pid_to_s32(m_d.m_targetPid, targetPid)) return false;
@@ -309,11 +309,11 @@ bool CDriver::Hwbp::remove(uint64_t addr) {
     return m_d.doIoctl(DRV_CMD_HWBP_REMOVE, &req) >= 0;
 }
 
-bool CDriver::Hwbp::clearAll() {
+bool Driver::Hwbp::clearAll() {
     return m_d.doIoctlRaw(DRV_CMD_HWBP_CLEAR_ALL, nullptr) >= 0;
 }
 
-std::vector<drv_hwbp_hit> CDriver::Hwbp::getHits(uint64_t addr, size_t maxHits) {
+std::vector<drv_hwbp_hit> Driver::Hwbp::getHits(uint64_t addr, size_t maxHits) {
     if (maxHits > DRV_HWBP_HIT_RING_SLOTS) {
         errno = E2BIG;
         return {};
@@ -336,7 +336,7 @@ std::vector<drv_hwbp_hit> CDriver::Hwbp::getHits(uint64_t addr, size_t maxHits) 
     return hits;
 }
 
-bool CDriver::PteHook::install(uint64_t addr, uint32_t kind, uint64_t value) {
+bool Driver::PteHook::install(uint64_t addr, uint32_t kind, uint64_t value) {
     drv_pte_hook_install_req req{};
     if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
     req.kind = kind;
@@ -345,11 +345,11 @@ bool CDriver::PteHook::install(uint64_t addr, uint32_t kind, uint64_t value) {
     return m_d.doIoctlRaw(DRV_CMD_PTE_HOOK_INSTALL, &req) >= 0;
 }
 
-bool CDriver::PteHook::returnVoid(uint64_t addr) {
+bool Driver::PteHook::returnVoid(uint64_t addr) {
     return install(addr, DRV_PTE_HOOK_VOID_RET, 0);
 }
 
-bool CDriver::PteHook::remove(uint64_t addr) {
+bool Driver::PteHook::remove(uint64_t addr) {
     drv_ioctl_req req{};
     int32_t targetPid;
     if (!target_pid_to_s32(m_d.m_targetPid, targetPid)) return false;
@@ -358,6 +358,35 @@ bool CDriver::PteHook::remove(uint64_t addr) {
     return m_d.doIoctl(DRV_CMD_PTE_HOOK_REMOVE, &req) >= 0;
 }
 
-bool CDriver::PteHook::clearAll() {
+bool Driver::PteHook::clearAll() {
     return m_d.doIoctlRaw(DRV_CMD_PTE_HOOK_CLEAR_ALL, nullptr) >= 0;
+}
+
+// HidePid subsystem — up to 8 PIDs concealed from /proc readdir (and from proactive KGSL hooks when the driver was built with HIDE_KGSL_STRENGTH>=2).
+bool Driver::HidePid::add(pid_t pid) {
+    drv_ioctl_req req{};
+    req.pid = static_cast<uint64_t>(pid);
+    return m_d.doIoctl(DRV_CMD_HIDE_PID_ADD, &req) >= 0;
+}
+
+bool Driver::HidePid::remove(pid_t pid) {
+    drv_ioctl_req req{};
+    req.pid = static_cast<uint64_t>(pid);
+    return m_d.doIoctl(DRV_CMD_HIDE_PID_REMOVE, &req) >= 0;
+}
+
+bool Driver::HidePid::clear() {
+    drv_ioctl_req req{};
+    return m_d.doIoctl(DRV_CMD_HIDE_PID_CLEAR, &req) >= 0;
+}
+
+std::vector<pid_t> Driver::HidePid::list() {
+    constexpr size_t kMax = 8;
+    std::vector<pid_t> out(kMax, 0);
+    drv_ioctl_req req{};
+    req.buf = reinterpret_cast<uint64_t>(out.data());
+    req.size = out.size() * sizeof(pid_t);
+    if (m_d.doIoctl(DRV_CMD_HIDE_PID_LIST, &req) < 0) return {};
+    out.resize(static_cast<size_t>(req.size));
+    return out;
 }

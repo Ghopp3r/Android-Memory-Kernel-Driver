@@ -102,19 +102,19 @@ static int hwbp_validate_override(const struct drv_hwbp_reg_override *override) 
 		return -EINVAL;
 
 	switch (override->kind) {
-	case DRV_HWBP_REG_NONE:
-		return 0;
-	case DRV_HWBP_REG_X:
-		return override->index <= 30u ? 0 : -EINVAL;
-	case DRV_HWBP_REG_VLO:
-	case DRV_HWBP_REG_VHI:
-		if (!hwbp_fp_ready)
-			return -EOPNOTSUPP;
-		return override->index <= 31u ? 0 : -EINVAL;
-	case DRV_HWBP_REG_PC:
-		return override->index == 0 ? 0 : -EINVAL;
-	default:
-		return -EINVAL;
+		case DRV_HWBP_REG_NONE:
+			return 0;
+		case DRV_HWBP_REG_X:
+			return override->index <= 30u ? 0 : -EINVAL;
+		case DRV_HWBP_REG_VLO:
+		case DRV_HWBP_REG_VHI:
+			if (!hwbp_fp_ready)
+				return -EOPNOTSUPP;
+			return override->index <= 31u ? 0 : -EINVAL;
+		case DRV_HWBP_REG_PC:
+			return override->index == 0 ? 0 : -EINVAL;
+		default:
+			return -EINVAL;
 	}
 }
 
@@ -200,14 +200,14 @@ static void hwbp_apply_gp(struct pt_regs *regs, const struct drv_hwbp_reg_overri
 
 	for (i = 0; i < count; i++) {
 		switch (overrides[i].kind) {
-		case DRV_HWBP_REG_X:
-			regs->regs[overrides[i].index] = overrides[i].value;
-			break;
-		case DRV_HWBP_REG_PC:
-			regs->pc = overrides[i].value;
-			break;
-		default:
-			break;
+			case DRV_HWBP_REG_X:
+				regs->regs[overrides[i].index] = overrides[i].value;
+				break;
+			case DRV_HWBP_REG_PC:
+				regs->pc = overrides[i].value;
+				break;
+			default:
+				break;
 		}
 	}
 }
@@ -257,7 +257,7 @@ static void hwbp_disable_orphaned(struct hwbp_tracker *tracker, struct perf_even
 	attr.disabled = 1;
 	rc = drv_call_modify_user_hw_bp(drv_modify_user_hw_bp_ptr, bp, &attr);
 	if (rc)
-		pr_drv_warn_ratelimited("hwbp: disable stale tracker rc=%d\n", rc);
+		LOGW_RL("hwbp: disable stale tracker rc=%d\n", rc);
 }
 
 static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, struct pt_regs *regs) {
@@ -280,7 +280,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 	if (tracker->pass_through && READ_ONCE(tracker->toggle) == HWBP_TOGGLE_NEXT) {
 		rc = hwbp_set_breakpoint_address(bp, tracker->addr);
 		if (rc) {
-			pr_drv_warn_ratelimited("hwbp: rearm rc=%d\n", rc);
+			LOGW_RL("hwbp: rearm rc=%d\n", rc);
 			return;
 		}
 		WRITE_ONCE(tracker->toggle, HWBP_TOGGLE_ORIGIN);
@@ -300,7 +300,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 
 	rc = hwbp_set_breakpoint_address(bp, tracker->addr + DRV_HWBP_LEN_EXECUTE);
 	if (rc) {
-		pr_drv_warn_ratelimited("hwbp: advance rc=%d\n", rc);
+		LOGW_RL("hwbp: advance rc=%d\n", rc);
 		return;
 	}
 	WRITE_ONCE(tracker->toggle, HWBP_TOGGLE_NEXT);
@@ -505,7 +505,7 @@ static long hwbp_install(void __user *arg) {
 	}
 	list_add_tail(&tracker->node, &hwbp_trackers);
 	mutex_unlock(&hwbp_mutex);
-	pr_drv("hwbp: installed pid=%d addr=%px passthrough=%u overrides=%u\n", req.pid, (void *)(uintptr_t)req.addr, req.pass_through, req.override_count);
+	LOGI("hwbp: installed pid=%d addr=%px passthrough=%u overrides=%u\n", req.pid, (void *)(uintptr_t)req.addr, req.pass_through, req.override_count);
 	rc = 0;
 
 out_put_task_mm:
@@ -677,7 +677,7 @@ int hwbp_init(void) {
 	drv_modify_user_hw_bp_ptr = (drv_modify_user_hw_bp_fn_t)kallsym_lookup("modify_user_hw_breakpoint");
 	drv_access_remote_vm_ptr = (drv_access_remote_vm_fn_t)kallsym_lookup("access_remote_vm");
 	if (!drv_register_user_hw_bp_ptr || !drv_unregister_hw_bp_ptr || !drv_modify_user_hw_bp_ptr || !drv_access_remote_vm_ptr) {
-		pr_drv_notice("hwbp: unavailable on this kernel\n");
+		LOGN("hwbp: unavailable on this kernel\n");
 		return -EOPNOTSUPP;
 	}
 	drv_fpsimd_preserve_current_state_ptr = (drv_fpsimd_preserve_current_state_fn_t)kallsym_lookup("fpsimd_preserve_current_state");
@@ -691,17 +691,17 @@ long do_hwbp_cmd(unsigned int cmd, void __user *arg) {
 	if (!hwbp_ready)
 		return -EOPNOTSUPP;
 	switch (cmd) {
-	case DRV_CMD_HWBP_INSTALL:
-		return hwbp_install(arg);
-	case DRV_CMD_HWBP_SET_OVERRIDE:
-		return hwbp_set_override(arg);
-	case DRV_CMD_HWBP_REMOVE:
-		return hwbp_remove(arg);
-	case DRV_CMD_HWBP_GET_HITS:
-		return hwbp_get_hits(arg);
-	case DRV_CMD_HWBP_CLEAR_ALL:
-		return hwbp_clear_all();
-	default:
-		return -ENOTTY;
+		case DRV_CMD_HWBP_INSTALL:
+			return hwbp_install(arg);
+		case DRV_CMD_HWBP_SET_OVERRIDE:
+			return hwbp_set_override(arg);
+		case DRV_CMD_HWBP_REMOVE:
+			return hwbp_remove(arg);
+		case DRV_CMD_HWBP_GET_HITS:
+			return hwbp_get_hits(arg);
+		case DRV_CMD_HWBP_CLEAR_ALL:
+			return hwbp_clear_all();
+		default:
+			return -ENOTTY;
 	}
 }

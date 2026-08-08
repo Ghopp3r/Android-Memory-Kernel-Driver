@@ -58,11 +58,11 @@ struct user_hook_slot {
 	bool expected_valid;
 };
 
-static LIST_HEAD(g_slots);
-static DEFINE_MUTEX(g_slots_lock);
-static access_remote_vm_fn_t g_access_remote_vm;
-static bool g_user_hook_initialized;
-static bool g_user_hook_ready;
+static LIST_HEAD(slots);
+static DEFINE_MUTEX(slots_lock);
+static access_remote_vm_fn_t access_remote_vm_ptr;
+static bool user_hook_initialized;
+static bool user_hook_ready;
 
 static inline u32 arm64_movz(u32 rd, u16 imm16, u32 hw) { return 0xD2800000u | (hw << 21) | ((u32)imm16 << 5) | rd; }
 static inline u32 arm64_movk(u32 rd, u16 imm16, u32 hw) { return 0xF2800000u | (hw << 21) | ((u32)imm16 << 5) | rd; }
@@ -101,25 +101,25 @@ static int build_patch(u32 out[USER_HOOK_MAX_INSNS], const u32 original[USER_HOO
 	out[count++] = is_bti(original[0]) ? original[0] : ARM64_BTI_C;
 
 	switch (kind) {
-	case DRV_PTE_HOOK_CONST_U64:
-		count += emit_mov_x(&out[count], 0, value);
-		out[count++] = ARM64_RET_X30;
-		break;
-	case DRV_PTE_HOOK_CONST_FLOAT:
-		count += emit_mov_w(&out[count], 1, (u32)value);
-		out[count++] = arm64_fmov_s_w(0, 1);
-		out[count++] = ARM64_RET_X30;
-		break;
-	case DRV_PTE_HOOK_CONST_DOUBLE:
-		count += emit_mov_x(&out[count], 1, value);
-		out[count++] = arm64_fmov_d_x(0, 1);
-		out[count++] = ARM64_RET_X30;
-		break;
-	case DRV_PTE_HOOK_VOID_RET:
-		out[count++] = ARM64_RET_X30;
-		break;
-	default:
-		return -EOPNOTSUPP;
+		case DRV_PTE_HOOK_CONST_U64:
+			count += emit_mov_x(&out[count], 0, value);
+			out[count++] = ARM64_RET_X30;
+			break;
+		case DRV_PTE_HOOK_CONST_FLOAT:
+			count += emit_mov_w(&out[count], 1, (u32)value);
+			out[count++] = arm64_fmov_s_w(0, 1);
+			out[count++] = ARM64_RET_X30;
+			break;
+		case DRV_PTE_HOOK_CONST_DOUBLE:
+			count += emit_mov_x(&out[count], 1, value);
+			out[count++] = arm64_fmov_d_x(0, 1);
+			out[count++] = ARM64_RET_X30;
+			break;
+		case DRV_PTE_HOOK_VOID_RET:
+			out[count++] = ARM64_RET_X30;
+			break;
+		default:
+			return -EOPNOTSUPP;
 	}
 
 	if (count > (int)USER_HOOK_MAX_INSNS) return -E2BIG;
@@ -155,7 +155,7 @@ static int validate_vma(struct mm_struct *mm, unsigned long addr) {
 }
 
 static int resolve_access_remote_vm_locked(void) {
-	return g_access_remote_vm ? 0 : -EOPNOTSUPP;
+	return access_remote_vm_ptr ? 0 : -EOPNOTSUPP;
 }
 
 static __nocfi noinline int call_access_remote_vm(access_remote_vm_fn_t fn, struct mm_struct *mm, unsigned long addr, void *buf, int len, unsigned int flags) {
@@ -170,7 +170,7 @@ static int copy_remote_locked(struct mm_struct *mm, unsigned long addr, void *bu
 	rc = resolve_access_remote_vm_locked();
 	if (rc) return rc;
 	if (write) flags |= FOLL_WRITE;
-	copied = call_access_remote_vm(g_access_remote_vm, mm, addr, buf, USER_HOOK_PATCH_BYTES, flags);
+	copied = call_access_remote_vm(access_remote_vm_ptr, mm, addr, buf, USER_HOOK_PATCH_BYTES, flags);
 	if (copied == USER_HOOK_PATCH_BYTES) return 0;
 	return copied < 0 ? copied : -EFAULT;
 }
@@ -178,7 +178,7 @@ static int copy_remote_locked(struct mm_struct *mm, unsigned long addr, void *bu
 static struct user_hook_slot *lookup_locked(struct pid *pid, unsigned long addr) {
 	struct user_hook_slot *slot;
 
-	list_for_each_entry(slot, &g_slots, node) {
+	list_for_each_entry(slot, &slots, node) {
 		if (slot->pid == pid && slot->addr == addr) return slot;
 	}
 	return NULL;
@@ -187,7 +187,7 @@ static struct user_hook_slot *lookup_locked(struct pid *pid, unsigned long addr)
 static struct user_hook_slot *lookup_overlap_locked(struct mm_struct *mm, unsigned long addr) {
 	struct user_hook_slot *slot;
 
-	list_for_each_entry(slot, &g_slots, node) {
+	list_for_each_entry(slot, &slots, node) {
 		if (slot->mm == mm && addr < slot->addr + USER_HOOK_PATCH_BYTES && slot->addr < addr + USER_HOOK_PATCH_BYTES) return slot;
 	}
 	return NULL;
@@ -332,7 +332,7 @@ static long do_install(void __user *arg) {
 		goto out_target;
 	}
 
-	mutex_lock(&g_slots_lock);
+	mutex_lock(&slots_lock);
 	dup = lookup_locked(pid, addr);
 	if (!dup && lookup_overlap_locked(mm, addr)) {
 		rc = -EBUSY;
@@ -368,7 +368,7 @@ static long do_install(void __user *arg) {
 		}
 		memcpy(dup->expected, next, USER_HOOK_PATCH_BYTES);
 		dup->expected_valid = true;
-		pr_drv("pte_hook: updated pid=%d addr=0x%lx kind=%u\n", req.pid, addr, req.kind);
+		LOGI("pte_hook: updated pid=%d addr=0x%lx kind=%u\n", req.pid, addr, req.kind);
 		goto out_unlock_free_new;
 	}
 
@@ -385,7 +385,7 @@ static long do_install(void __user *arg) {
 	rc = build_patch(slot->expected, slot->original, req.kind, req.ret_value);
 	if (rc) goto out_unlock_free_new;
 	slot->expected_valid = true;
-	list_add_tail(&slot->node, &g_slots);
+	list_add_tail(&slot->node, &slots);
 	rc = write_transaction_locked(slot, slot->expected, slot->original, &rollback_ok);
 	if (rc) {
 		if (rollback_ok) {
@@ -394,21 +394,21 @@ static long do_install(void __user *arg) {
 			slot_owns_refs = false;
 		} else {
 			slot->expected_valid = false;
-			pr_drv_err("pte_hook: install rollback failed pid=%d addr=0x%lx; recovery slot kept\n", req.pid, addr);
+			LOGE("pte_hook: install rollback failed pid=%d addr=0x%lx; recovery slot kept\n", req.pid, addr);
 		}
 		goto out_unlock;
 	}
-	pr_drv("pte_hook: installed pid=%d addr=0x%lx kind=%u\n", req.pid, addr, req.kind);
+	LOGI("pte_hook: installed pid=%d addr=0x%lx kind=%u\n", req.pid, addr, req.kind);
 
 out_unlock:
-	mutex_unlock(&g_slots_lock);
+	mutex_unlock(&slots_lock);
 	if (pid) put_pid(pid);
 	mmput(mm);
 	put_task_struct(task);
 	return rc;
 
 out_unlock_free_new:
-	mutex_unlock(&g_slots_lock);
+	mutex_unlock(&slots_lock);
 	if (slot_owns_refs) free_slot(slot);
 	else kfree(slot);
 	if (pid) put_pid(pid);
@@ -433,7 +433,7 @@ static long do_remove(void __user *arg) {
 	rc = resolve_tgid_pid((pid_t)req.pid, &pid);
 	if (rc) return rc;
 
-	mutex_lock(&g_slots_lock);
+	mutex_lock(&slots_lock);
 	slot = lookup_locked(pid, addr);
 	if (!slot) {
 		rc = -ENOENT;
@@ -442,11 +442,11 @@ static long do_remove(void __user *arg) {
 	rc = restore_slot_locked(slot, &mm_dead);
 	if (rc) goto out;
 	list_del(&slot->node);
-	pr_drv("pte_hook: removed pid=%d addr=0x%lx%s\n", slot->display_pid, slot->addr, mm_dead ? " (mm gone)" : "");
+	LOGI("pte_hook: removed pid=%d addr=0x%lx%s\n", slot->display_pid, slot->addr, mm_dead ? " (mm gone)" : "");
 	free_slot(slot);
 
 out:
-	mutex_unlock(&g_slots_lock);
+	mutex_unlock(&slots_lock);
 	put_pid(pid);
 	return rc;
 }
@@ -456,46 +456,46 @@ static long do_clear_all(void) {
 	struct user_hook_slot *next;
 	int first_error = 0;
 
-	mutex_lock(&g_slots_lock);
-	list_for_each_entry_safe(slot, next, &g_slots, node) {
+	mutex_lock(&slots_lock);
+	list_for_each_entry_safe(slot, next, &slots, node) {
 		bool mm_dead;
 		int rc = restore_slot_locked(slot, &mm_dead);
 
 		if (rc) {
 			if (!first_error) first_error = rc;
-			pr_drv_err("pte_hook: clear failed pid=%d addr=0x%lx rc=%d\n", slot->display_pid, slot->addr, rc);
+			LOGE("pte_hook: clear failed pid=%d addr=0x%lx rc=%d\n", slot->display_pid, slot->addr, rc);
 			continue;
 		}
 		list_del(&slot->node);
 		free_slot(slot);
 	}
-	mutex_unlock(&g_slots_lock);
+	mutex_unlock(&slots_lock);
 	return first_error;
 }
 
 long do_pte_hook_cmd(unsigned int cmd, void __user *arg) {
-	if (!g_user_hook_ready) return -EOPNOTSUPP;
+	if (!user_hook_ready) return -EOPNOTSUPP;
 	switch (cmd) {
-	case DRV_CMD_PTE_HOOK_INSTALL:
-		return do_install(arg);
-	case DRV_CMD_PTE_HOOK_REMOVE:
-		return do_remove(arg);
-	case DRV_CMD_PTE_HOOK_CLEAR_ALL:
-		return do_clear_all();
-	default:
-		return -ENOTTY;
+		case DRV_CMD_PTE_HOOK_INSTALL:
+			return do_install(arg);
+		case DRV_CMD_PTE_HOOK_REMOVE:
+			return do_remove(arg);
+		case DRV_CMD_PTE_HOOK_CLEAR_ALL:
+			return do_clear_all();
+		default:
+			return -ENOTTY;
 	}
 }
 
 int user_hook_init(void) {
-	if (g_user_hook_initialized) return g_user_hook_ready ? 0 : -EOPNOTSUPP;
-	g_user_hook_initialized = true;
+	if (user_hook_initialized) return user_hook_ready ? 0 : -EOPNOTSUPP;
+	user_hook_initialized = true;
 	BUILD_BUG_ON(sizeof(struct drv_pte_hook_install_req) != 40);
-	g_access_remote_vm = (access_remote_vm_fn_t)kallsym_lookup("access_remote_vm");
-	if (!g_access_remote_vm) {
-		pr_drv_notice("pte_hook: unavailable on this kernel\n");
+	access_remote_vm_ptr = (access_remote_vm_fn_t)kallsym_lookup("access_remote_vm");
+	if (!access_remote_vm_ptr) {
+		LOGN("pte_hook: unavailable on this kernel\n");
 		return -EOPNOTSUPP;
 	}
-	g_user_hook_ready = true;
+	user_hook_ready = true;
 	return 0;
 }

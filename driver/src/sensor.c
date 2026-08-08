@@ -80,7 +80,7 @@ static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe
 	if (!uprobe_register_ptr) {
 		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
 		if (!uprobe_register_ptr) {
-			pr_drv_err("uprobe_register not found\n");
+			LOGE("uprobe_register not found\n");
 			return -ENOENT;
 		}
 	}
@@ -100,7 +100,7 @@ static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe
 	if (!uprobe_register_ptr) {
 		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
 		if (!uprobe_register_ptr) {
-			pr_drv_err("uprobe_register not found\n");
+			LOGE("uprobe_register not found\n");
 			return -ENOENT;
 		}
 	}
@@ -345,7 +345,7 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 	if (copy_from_user(&sensor_type,
 			   (void __user *)(user_ptr + layout->type_off),
 			   sizeof(sensor_type)) != 0) {
-		pr_drv_err("sensor_hook copy_from_user failed\n");
+		LOGE("sensor_hook copy_from_user failed\n");
 		return 0;
 	}
 	if (sensor_type != 4)
@@ -357,7 +357,7 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 		if (copy_from_user(&payload_tag,
 				   (void __user *)(user_ptr + layout->tag_off),
 				   sizeof(payload_tag)) != 0) {
-			pr_drv_err("sensor_hook copy_from_user failed\n");
+			LOGE("sensor_hook copy_from_user failed\n");
 			return 0;
 		}
 		if (payload_tag != layout->tag_value)
@@ -366,7 +366,7 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 
 	if (copy_from_user(xy, (void __user *)(user_ptr + layout->data_off),
 			   sizeof(xy)) != 0) {
-		pr_drv_err("sensor_hook copy_from_user failed\n");
+		LOGE("sensor_hook copy_from_user failed\n");
 		return 0;
 	}
 
@@ -376,7 +376,7 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 
 	if (copy_to_user((void __user *)(user_ptr + layout->data_off), xy,
 			 sizeof(xy)) != 0) {
-		pr_drv_err("sensor_hook copy_to_user failed\n");
+		LOGE("sensor_hook copy_to_user failed\n");
 		return 0;
 	}
 
@@ -418,7 +418,7 @@ int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 
 	ret = kern_path(SENSOR_TARGET_SO, LOOKUP_FOLLOW, &path);
 	if (ret != 0) {
-		pr_drv_err("kern_path failed: %d\n", ret);
+		LOGE("kern_path failed: %d\n", ret);
 		goto out_unlock;
 	}
 
@@ -441,7 +441,7 @@ int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 
 	ret = drv_uprobe_register(inode, probe_offset, &uc);
 	if (ret != 0)
-		pr_drv_err("uprobe_register failed: %d\n", ret);
+		LOGE("uprobe_register failed: %d\n", ret);
 	else {
 		/* Publish the layout only after the registration succeeds. A handler
 		 * racing in the tiny interval before this store safely sees -1 and

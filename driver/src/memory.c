@@ -58,41 +58,22 @@
 #include "memory.h"
 #include "uaccess_target.h"
 
-/* ARM64 pagewalk arithmetic. PA extraction uses the kernel's own primitives
- * (__pte_to_phys, PHYS_MASK) so the driver is correct across
- * CONFIG_ARM64_PA_BITS_48 (GKI default) and CONFIG_ARM64_PA_BITS_52 (LPA2)
- * without per-version literals. PAGE_OFFSET is intentionally NOT hardcoded;
- * phys_to_virt() honours vabits_actual. */
-/* Strip ARMv8 TBI / PAC byte from a user VA before handing to uaccess. */
+/* Pagewalk arithmetic uses kernel primitives (__pte_to_phys, PHYS_MASK, phys_to_virt) — correct for both PA_BITS_48 and PA_BITS_52 (LPA2) without per-version literals. */
+/* Strip ARMv8 TBI / PAC byte from a user VA before uaccess. */
 #define DRV_TBI_PAC_STRIP_MASK 0xFF7FFFFFFFFFFFFFULL
 /* write_ro_memory PTE bit-flip: clear PTE_RDONLY(bit 7), set PTE_DBM(bit 51). */
 #define DRV_PTE_RDONLY_CLEAR 0xFFF7FFFFFFFFFF7FULL
 #define DRV_PTE_DBM_SET 0x0008000000000000ULL
 
-/* Two distinct dcache-line caches — one for linear-map, one for vmap. */
+/* One dcache-line cache per addressing mode. */
 static u32 dcache_line_size_linear;
 static u32 dcache_line_size_vmap;
 
-/* Resolved once at module init via kallsym_lookup. The kernel's own
-   self-modifying-text primitive: installs the target PFN in FIX_TEXT_POKE0
-   (a single fixmap page, allocated WITHOUT PTE_CONT by construction),
-   writes the u32 through the RW fixmap alias, performs the architectural
-   caches_clean_inval_pou + broadcast IS TLBI, then tears the fixmap down.
-   Eliminates the contig-block BBM hazard that broke the bespoke PTE-flip
-   path on Android 15 / 6.6 GKI (kernel .text is mapped with PTE_CONT, so a
-   per-VA TLBI cannot evict the 64 KiB amalgamated TLB entry — see pstore
-   evidence: pte=0x00580000A90D0703 has bit 7=0 (writable per our flip), bit
-   51=1 (DBM set), and bit 52=1 (PTE_CONT) — the in-memory leaf was correct
-   but the TLB held a stale RO entry tagged with a sibling VA in the contig
-   group). The same primitive is used by ftrace, jump_label, static_call,
-   KernelPatch, and KernelSU. */
+/* Kernel's own self-modifying-text primitive (FIX_TEXT_POKE0 + broadcast TLBI). Kallsym-resolved. Bypasses the contig-block BBM hazard that broke the bespoke PTE-flip path on 6.6 GKI (kernel .text is mapped with PTE_CONT so per-VA TLBI cannot evict the 64 KiB amalgamated entry). Used by ftrace / jump_label / static_call / KernelPatch / KernelSU. */
 typedef int (*drv_insn_patch_text_nosync_fn_t)(void *addr, u32 insn);
 static drv_insn_patch_text_nosync_fn_t drv_insn_patch_text_nosync;
 
-/* get_cmdline() has kept this signature across every supported Android GKI
- * (5.10 through 6.12), but is not consistently exported to GKI modules.
- * Resolve it once through the driver's existing kallsyms bridge so
- * modpost/KMI allowlists do not gain a version-specific dependency. */
+/* get_cmdline signature is stable across 5.10..6.12 but not consistently GKI-exported; resolve through kallsyms so modpost does not add a version dependency. */
 typedef int (*drv_get_cmdline_fn_t)(struct task_struct *task, char *buffer, int buflen);
 static drv_get_cmdline_fn_t drv_get_cmdline;
 
@@ -116,12 +97,12 @@ int memory_init(void) {
 	if (!addr) {
 #if PAGE_SHIFT == 12
 		if (drv.m_page_level >= 3 && drv.m_page_level <= 4)
-			pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
+			LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
 		else
-			pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for page-table depth %u\n",
+			LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for page-table depth %u\n",
 				    drv.m_page_level);
 #else
-		pr_drv_warn("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for PAGE_SHIFT=%u\n",
+		LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for PAGE_SHIFT=%u\n",
 			    (unsigned int)PAGE_SHIFT);
 #endif
 	} else {
@@ -130,7 +111,7 @@ int memory_init(void) {
 
 	addr = kallsym_lookup("get_cmdline");
 	if (!addr) {
-		pr_drv_warn("memory_init: get_cmdline not in kallsyms; package lookup disabled\n");
+		LOGW("memory_init: get_cmdline not in kallsyms; package lookup disabled\n");
 	} else {
 		drv_get_cmdline = (drv_get_cmdline_fn_t)addr;
 	}
@@ -313,7 +294,7 @@ int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void 
 		 * offset and matched) but breaking MULTI_READ which honoured it. */
 		if (copy_to_user((void __user *)(uintptr_t)user_dst,
 		                 (const void *)(uintptr_t)lm_va + off, chunk) != 0)
-			pr_drv_err("copy_to_user failed: %s\n", __func__);
+			LOGE("copy_to_user failed: %s\n", __func__);
 
 		/* No dcache maintenance here. Pure data reads through the linear-map
 		 * alias are CPU-coherent — copy_to_user's uaccess epilogue drains the
@@ -368,7 +349,7 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 		if (copy_from_user((void *)(uintptr_t)lm_va + off,
 		                   (const void __user *)(uintptr_t)user_src, chunk) != 0 &&
 		    !copy_failed) {
-			pr_drv_err("copy_from_user failed: %s\n", __func__);
+			LOGE("copy_from_user failed: %s\n", __func__);
 			copy_failed = true;
 		}
 skip:
@@ -418,7 +399,7 @@ int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *l
 		/* See read_process_memory_linear for why the DC CIVAC ladder is gone. */
 
 		if (copy_to_user((void __user *)(uintptr_t)user_dst, (char *)mapped + off, chunk) != 0)
-			pr_drv_err("copy_to_user failed: %s\n", __func__);
+			LOGE("copy_to_user failed: %s\n", __func__);
 
 		vunmap(mapped);
 skip:
@@ -475,7 +456,7 @@ int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const 
 		if (copy_from_user((char *)mapped + off,
 		                   (const void __user *)(uintptr_t)user_src, chunk) != 0 &&
 		    !copy_failed) {
-			pr_drv_err("copy_from_user failed: %s\n", __func__);
+			LOGE("copy_from_user failed: %s\n", __func__);
 			copy_failed = true;
 		}
 		vunmap(mapped);
@@ -591,7 +572,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 			/* The module remains usable on LPA2, but this legacy fallback
 			 * only understands the 3/4-level 4 KiB format. Abort before
 			 * dereferencing the captured root on any other depth. */
-			pr_drv_err("write_ro_memory_pte_flip: unexpected page level %u; aborting\n", level_count);
+			LOGE("write_ro_memory_pte_flip: unexpected page level %u; aborting\n", level_count);
 			return result;
 		}
 
@@ -678,7 +659,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	(void)src;
 	(void)len;
-	pr_drv_err("write_ro_memory: legacy PTE-flip unavailable for PAGE_SHIFT=%u\n",
+	LOGE("write_ro_memory: legacy PTE-flip unavailable for PAGE_SHIFT=%u\n",
 		   (unsigned int)PAGE_SHIFT);
 	return dst_kva;
 }
@@ -712,7 +693,7 @@ u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
 
 		memcpy(&insn, &src_u32[i], sizeof(insn));
 		if (drv_call_insn_patch_text_nosync(patch, (void *)(uintptr_t)(dst_kva + (i << 2)), insn)) {
-			pr_drv_err("write_ro_memory: aarch64_insn_patch_text_nosync(%llx) failed\n",
+			LOGE("write_ro_memory: aarch64_insn_patch_text_nosync(%llx) failed\n",
 				   (unsigned long long)(dst_kva + (i << 2)));
 			break;
 		}

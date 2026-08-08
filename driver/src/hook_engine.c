@@ -355,36 +355,36 @@ int relocate_inst(hook_t *hook, u64 inst_addr, u32 inst) {
 	}
 
 	switch (it) {
-	case INST_B:
-	case INST_BC:
-	case INST_BL:
-		rc = relo_b(hook, inst_addr, inst, (int)it);
-		break;
-	case INST_ADR:
-	case INST_ADRP:
-		rc = relo_adr(hook, inst_addr, inst, (int)it);
-		break;
-	case INST_LDR_32:
-	case INST_LDR_64:
-	case INST_LDRSW_LIT:
-	case INST_PRFM_LIT:
-	case INST_LDR_SIMD_32:
-	case INST_LDR_SIMD_64:
-	case INST_LDR_SIMD_128:
-		rc = relo_ldr(hook, inst_addr, inst, (int)it);
-		break;
-	case INST_CBZ:
-	case INST_CBNZ:
-		rc = relo_cb(hook, inst_addr, inst);
-		break;
-	case INST_TBZ:
-	case INST_TBNZ:
-		rc = relo_tb(hook, inst_addr, inst);
-		break;
-	case INST_IGNORE:
-	default:
-		rc = relo_ignore(hook, inst);
-		break;
+		case INST_B:
+		case INST_BC:
+		case INST_BL:
+			rc = relo_b(hook, inst_addr, inst, (int)it);
+			break;
+		case INST_ADR:
+		case INST_ADRP:
+			rc = relo_adr(hook, inst_addr, inst, (int)it);
+			break;
+		case INST_LDR_32:
+		case INST_LDR_64:
+		case INST_LDRSW_LIT:
+		case INST_PRFM_LIT:
+		case INST_LDR_SIMD_32:
+		case INST_LDR_SIMD_64:
+		case INST_LDR_SIMD_128:
+			rc = relo_ldr(hook, inst_addr, inst, (int)it);
+			break;
+		case INST_CBZ:
+		case INST_CBNZ:
+			rc = relo_cb(hook, inst_addr, inst);
+			break;
+		case INST_TBZ:
+		case INST_TBNZ:
+			rc = relo_tb(hook, inst_addr, inst);
+			break;
+		case INST_IGNORE:
+		default:
+			rc = relo_ignore(hook, inst);
+			break;
 	}
 
 	hook->relo_insts_num += len;
@@ -491,7 +491,7 @@ static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt) {
 	hook_engine_resolve_symbols();
 
 	if (cnt <= 0 || cnt > TRAMPOLINE_MAX_NUM) {
-		pr_drv_err("hook_engine_patch_window: bad cnt=%d\n", cnt);
+		LOGE("hook_engine_patch_window: bad cnt=%d\n", cnt);
 		return;
 	}
 
@@ -501,7 +501,7 @@ static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt) {
 	if (drv_aarch64_insn_patch_text_ptr) {
 		rc = drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_ptr, addrs, insns, cnt);
 		if (rc)
-			pr_drv_err("hook_engine_patch_window: aarch64_insn_patch_text rc=%d\n", rc);
+			LOGE("hook_engine_patch_window: aarch64_insn_patch_text rc=%d\n", rc);
 		return;
 	}
 

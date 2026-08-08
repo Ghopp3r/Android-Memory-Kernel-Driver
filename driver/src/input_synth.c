@@ -264,7 +264,7 @@ int install_input_hooks(void) {
 		/* input_handle_event is not exported on >= 6.6 (no __ksymtab entry); resolve via kallsyms. */
 		input_handle_event_ptr = (input_handle_event_fn_t)kallsym_lookup("input_handle_event");
 		if (!input_handle_event_ptr) {
-			pr_drv_err("input_synth: failed to resolve input_handle_event via kallsyms\n");
+			LOGE("input_synth: failed to resolve input_handle_event via kallsyms\n");
 			ret = -ENOENT;
 			goto out_unlock;
 		}
@@ -276,7 +276,7 @@ int install_input_hooks(void) {
 		/* Binary uses kvmalloc_node with gfp 0xCC0 (GFP_KERNEL|__GFP_RETRY_MAYFAIL); mirror the retry hint so allocator behaviour matches under pressure. */
 		p = kvzalloc(sizeof(*p), GFP_KERNEL | __GFP_RETRY_MAYFAIL);
 		if (!p) {
-			pr_drv_err("input_synth: failed to alloc event pool\n");
+			LOGE("input_synth: failed to alloc event pool\n");
 			ret = -ENOMEM;
 			goto out_unlock;
 		}
@@ -297,7 +297,7 @@ int install_input_hooks(void) {
 		drv.kp_input_event.pre_handler = input_handle_event_handler_pre;
 		ret = register_kprobe(&drv.kp_input_event);
 		if (ret) {
-			pr_drv_err("Failed to register kprobe kp_input_event: %d\n", ret);
+			LOGE("Failed to register kprobe kp_input_event: %d\n", ret);
 			/* register_kprobe() resolves symbol_name into addr before some
 			 * later failures. Clear it so a retry does not present both. */
 			drv.kp_input_event.addr = NULL;
@@ -312,7 +312,7 @@ int install_input_hooks(void) {
 		drv.kp_input_inject_event.pre_handler = input_handle_event_handler2_pre;
 		ret = register_kprobe(&drv.kp_input_inject_event);
 		if (ret) {
-			pr_drv_err("Failed to register kprobe kp_input_inject_event: %d\n", ret);
+			LOGE("Failed to register kprobe kp_input_inject_event: %d\n", ret);
 			drv.kp_input_inject_event.addr = NULL;
 			if (input_event_registered_now) {
 				unregister_kprobe(&drv.kp_input_event);

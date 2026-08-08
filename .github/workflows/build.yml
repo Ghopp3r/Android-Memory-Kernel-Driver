@@ -17,9 +17,13 @@ on:
       ddk_release:
         description: 'ghcr.io/ylarod/ddk image tag suffix (release date)'
         required: false
-        # android16-6.12 requires normalized KCFI type IDs. 20251104 is the
-        # first DDK release that configures them correctly.
+        # android16-6.12 requires normalized KCFI type IDs. 20251104 is the first DDK release that configures them correctly.
         default: '20251104'
+        type: string
+      hide_kgsl_strength:
+        description: 'HIDE_KGSL_STRENGTH override (0..3). Empty = default (0).'
+        required: false
+        default: ''
         type: string
 
 jobs:
@@ -81,7 +85,9 @@ jobs:
     env:
       DRIVER_NAME: my-driver
       HIDE_SELF_MODULE: '1'
-      HIDE_KGSL: '0'
+      HIDE_VMAP: '1'
+      HIDE_TASK: '1'
+      HIDE_KGSL_STRENGTH: ${{ inputs.hide_kgsl_strength || '0' }}
 
     steps:
       - name: Checkout source
@@ -94,8 +100,10 @@ jobs:
           echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}"
           echo "=== KERNEL_SRC:    $KERNEL_SRC"
           echo "=== DRIVER_NAME:   $DRIVER_NAME"
-          echo "=== HIDE_SELF_MODULE: $HIDE_SELF_MODULE"
-          echo "=== HIDE_KGSL:         $HIDE_KGSL"
+          echo "=== HIDE_SELF_MODULE:   $HIDE_SELF_MODULE"
+          echo "=== HIDE_VMAP:          $HIDE_VMAP"
+          echo "=== HIDE_TASK:          $HIDE_TASK"
+          echo "=== HIDE_KGSL_STRENGTH: $HIDE_KGSL_STRENGTH"
           uname -a
           which clang || true
           clang --version || true
@@ -119,13 +127,20 @@ jobs:
           make -j"$(nproc)"
           ls -la "${DRIVER_NAME}.ko"
 
-      - name: Verify default concealment feature gates
+      - name: Verify concealment feature gates
         working-directory: driver
         run: |
           set -eux
           grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_SELF_MODULE=1' .
-          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_KGSL=0' .
-          test ! -e src/stealth.o
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_VMAP=1' .
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_TASK=1' .
+          grep -R -F -q --include='*.cmd' -- "-DKCFG_HIDE_KGSL_STRENGTH=${HIDE_KGSL_STRENGTH}" .
+          test -e src/hide_task.o
+          if [ "${HIDE_KGSL_STRENGTH}" = "0" ]; then
+            test ! -e src/stealth.o
+          else
+            test -e src/stealth.o
+          fi
 
       # Confirm that the normalized KCFI setting reached the external-module
       # compiler command rather than merely existing in the kernel .config.

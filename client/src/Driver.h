@@ -17,11 +17,11 @@ struct VmaInfo {
     uint64_t end = 0;
 };
 
-class CDriver {
+class Driver {
 public:
     class Memory {
     public:
-        Memory(CDriver& d) : m_d(d) {}
+        Memory(Driver& d) : m_d(d) {}
 
         bool read(uint64_t addr, void* out, size_t len);
         bool write(uint64_t addr, const void* in, size_t len);
@@ -53,59 +53,70 @@ public:
 
     private:
         bool writeChunked(unsigned int cmd, uint64_t addr, const void* in, size_t len);
-        CDriver& m_d;
+        Driver& m_d;
     };
 
     class Touch {
     public:
-        Touch(CDriver& d) : m_d(d) {}
+        Touch(Driver& d) : m_d(d) {}
         bool down(int slot, int x, int y, int pressure = 50);
         bool move(int slot, int x, int y);
         bool up(int slot);
     private:
-        CDriver& m_d;
+        Driver& m_d;
     };
 
     class Gyro {
     public:
-        Gyro(CDriver& d) : m_d(d) {}
+        Gyro(Driver& d) : m_d(d) {}
         bool bind(uint64_t probeOffset, int layoutProfile);
         bool bindAuto();
         bool write(float dx, float dy, bool enable);
         bool isArmed() const { return m_armed; }
     private:
-        CDriver& m_d;
+        Driver& m_d;
         bool m_armed = false;
     };
 
     class Hwbp {
     public:
-        Hwbp(CDriver& d) : m_d(d) {}
+        Hwbp(Driver& d) : m_d(d) {}
         bool install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough = false, uint32_t bpType = DRV_HWBP_TYPE_EXECUTE, uint32_t bpLen = DRV_HWBP_LEN_EXECUTE);
         bool setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides);
         bool remove(uint64_t addr);
         bool clearAll();
         std::vector<drv_hwbp_hit> getHits(uint64_t addr, size_t maxHits = DRV_HWBP_HIT_RING_SLOTS);
     private:
-        CDriver& m_d;
+        Driver& m_d;
     };
 
     class PteHook {
     public:
-        PteHook(CDriver& d) : m_d(d) {}
+        PteHook(Driver& d) : m_d(d) {}
         template<typename T> bool returnConst(uint64_t addr, T value);
         bool returnVoid(uint64_t addr);
         bool install(uint64_t addr, uint32_t kind, uint64_t value);
         bool remove(uint64_t addr);
         bool clearAll();
     private:
-        CDriver& m_d;
+        Driver& m_d;
     };
 
-    CDriver();
-    ~CDriver();
-    CDriver(const CDriver&) = delete;
-    CDriver& operator=(const CDriver&) = delete;
+    class HidePid {
+    public:
+        HidePid(Driver& d) : m_d(d) {}
+        bool add(pid_t pid);
+        bool remove(pid_t pid);
+        bool clear();
+        std::vector<pid_t> list();
+    private:
+        Driver& m_d;
+    };
+
+    Driver();
+    ~Driver();
+    Driver(const Driver&) = delete;
+    Driver& operator=(const Driver&) = delete;
 
     bool open();
     void close();
@@ -125,6 +136,7 @@ public:
     Gyro gyro;
     Hwbp hwbp;
     PteHook pteHook;
+    HidePid hidePid;
 
 private:
     int doIoctl(unsigned int cmd, drv_ioctl_req* req);
@@ -134,7 +146,7 @@ private:
     pid_t m_targetPid = 0;
 };
 
-extern CDriver driver;
+extern Driver driver;
 
 static_assert(sizeof(drv_hwbp_reg_override) == 16);
 static_assert(sizeof(drv_hwbp_install_req) == 192);
@@ -142,7 +154,7 @@ static_assert(sizeof(drv_hwbp_hit) == 280);
 static_assert(sizeof(drv_pte_hook_install_req) == 40);
 
 template<typename T>
-bool CDriver::PteHook::returnConst(uint64_t addr, T value) {
+bool Driver::PteHook::returnConst(uint64_t addr, T value) {
     static_assert(sizeof(T) <= sizeof(uint64_t), "returnConst value must fit in an AArch64 return register");
     if constexpr (std::is_same_v<std::remove_cv_t<T>, float>) {
         uint32_t bits = 0;

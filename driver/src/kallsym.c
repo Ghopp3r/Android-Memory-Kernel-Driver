@@ -45,7 +45,7 @@ int kallsym_init(void) {
 
 	ret = register_kprobe(&kp);
 	if (ret < 0) {
-		pr_drv_err("kallsym_init: register_kprobe (kallsyms_lookup_name) failed: %d\n", ret);
+		LOGE("kallsym_init: register_kprobe (kallsyms_lookup_name) failed: %d\n", ret);
 		return ret;
 	}
 
@@ -54,11 +54,11 @@ int kallsym_init(void) {
 	unregister_kprobe(&kp);
 
 	if (!kallsym_lookup_name_ptr) {
-		pr_drv_err("kallsym_init: kp.addr was NULL after register_kprobe\n");
+		LOGE("kallsym_init: kp.addr was NULL after register_kprobe\n");
 		return -ENOSYS;
 	}
 
-	pr_drv("kallsym_init: kallsyms_lookup_name resolved at %p\n", kallsym_lookup_name_ptr);
+	LOGI("kallsym_init: kallsyms_lookup_name resolved at %p\n", kallsym_lookup_name_ptr);
 	return 0;
 #else
 	/* < 5.7: kallsyms_lookup_name () is still EXPORT_SYMBOL_GPL, no shim needed. */
@@ -87,7 +87,7 @@ unsigned long kallsym_lookup_or_die(const char *name) {
 	unsigned long addr = kallsym_lookup(name);
 
 	if (!addr) {
-		pr_drv_err("kallsym_lookup_or_die: required symbol \"%s\" not found\n", name ? name : "(null)");
+		LOGE("kallsym_lookup_or_die: required symbol \"%s\" not found\n", name ? name : "(null)");
 		WARN_ON(1);
 	}
 
@@ -108,7 +108,7 @@ int kallsym_disable_kprobe_blacklist(void) {
 
 	kprobe_blacklist = (struct list_head *)kallsym_lookup("kprobe_blacklist");
 	if (!kprobe_blacklist) {
-		pr_drv_err("kallsym_disable_kprobe_blacklist: kprobe_blacklist not found\n");
+		LOGE("kallsym_disable_kprobe_blacklist: kprobe_blacklist not found\n");
 		return -ENOENT;
 	}
 
@@ -121,6 +121,6 @@ int kallsym_disable_kprobe_blacklist(void) {
 		count++;
 	}
 
-	pr_drv("kallsym_disable_kprobe_blacklist: disabled %d entries\n", count);
+	LOGI("kallsym_disable_kprobe_blacklist: disabled %d entries\n", count);
 	return 0;
 }

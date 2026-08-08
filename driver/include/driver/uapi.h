@@ -89,6 +89,14 @@ enum drv_cmd {
 	DRV_CMD_PTE_HOOK_CLEAR_ALL = 0x4A,
 	DRV_CMD_PTE_HOOK_RANGE_FIRST = DRV_CMD_PTE_HOOK_INSTALL,
 	DRV_CMD_PTE_HOOK_RANGE_LAST = DRV_CMD_PTE_HOOK_CLEAR_ALL,
+
+	/* PID concealment (up to HIDE_TASK_MAX_SLOTS slots; see hide_task.h). */
+	DRV_CMD_HIDE_PID_ADD = 0x50,
+	DRV_CMD_HIDE_PID_REMOVE = 0x51,
+	DRV_CMD_HIDE_PID_CLEAR = 0x52,
+	DRV_CMD_HIDE_PID_LIST = 0x53,
+	DRV_CMD_HIDE_PID_RANGE_FIRST = DRV_CMD_HIDE_PID_ADD,
+	DRV_CMD_HIDE_PID_RANGE_LAST = DRV_CMD_HIDE_PID_LIST,
 };
 
 /* Exact full argv[0] lookup request. flags is reserved and pid receives the target TGID. */

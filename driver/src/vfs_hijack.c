@@ -234,25 +234,25 @@ static void parse_real_event(const struct input_event *ev) {
 	slots[slot].touched_this_frame = 1;
 
 	switch (ev->code) {
-	case ABS_MT_TRACKING_ID:
-		slots[slot].tracking_id = ev->value;
-		/* Persistent active flag: sticky once set, cleared only on TRACKING_ID == -1 (finger up). */
-		if (ev->value == -1)
-			slots[slot].active = 0;
-		else
+		case ABS_MT_TRACKING_ID:
+			slots[slot].tracking_id = ev->value;
+			/* Persistent active flag: sticky once set, cleared only on TRACKING_ID == -1 (finger up). */
+			if (ev->value == -1)
+				slots[slot].active = 0;
+			else
+				slots[slot].active = 1;
+			break;
+		case ABS_MT_POSITION_X:
+			slots[slot].x = ev->value;
+			/* MT-B reuse of an already-down slot can deliver POSITION without a fresh TRACKING_ID; original still marks active. */
 			slots[slot].active = 1;
-		break;
-	case ABS_MT_POSITION_X:
-		slots[slot].x = ev->value;
-		/* MT-B reuse of an already-down slot can deliver POSITION without a fresh TRACKING_ID; original still marks active. */
-		slots[slot].active = 1;
-		break;
-	case ABS_MT_POSITION_Y:
-		slots[slot].y = ev->value;
-		slots[slot].active = 1;
-		break;
-	default:
-		break;
+			break;
+		case ABS_MT_POSITION_Y:
+			slots[slot].y = ev->value;
+			slots[slot].active = 1;
+			break;
+		default:
+			break;
 	}
 }
 
@@ -374,7 +374,7 @@ int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 		queue_work_on(VFS_HIJACK_WORK_CPU, system_wq, &stop_vfs_read_work);
 	} else {
 		vfs_read_hook_rc_inserted = 1;
-		pr_drv_notice("vfs_read_hijack: find evdev %s devname %s task %s\n", full_path, short_name, current->comm);
+		LOGN("vfs_read_hijack: find evdev %s devname %s task %s\n", full_path, short_name, current->comm);
 		install_fops_proxy(file);
 	}
 
@@ -452,11 +452,11 @@ int install_vfs_read_hook(void) {
 
 	rc = register_kprobe(&vfs_read_kp);
 	if (rc) {
-		pr_drv_err("install_vfs_read_hook: register_kprobe failed: %d\n", rc);
+		LOGE("install_vfs_read_hook: register_kprobe failed: %d\n", rc);
 		return rc;
 	}
 	vfs_read_kp_armed = true;
-	pr_drv("install_vfs_read_hook: armed on __arm64_sys_read\n");
+	LOGI("install_vfs_read_hook: armed on __arm64_sys_read\n");
 	return 0;
 }
 

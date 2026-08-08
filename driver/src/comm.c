@@ -33,14 +33,9 @@
 #define __nocfi
 #endif
 
-#if KCFG_HIDE_KGSL
-#define DRV_KGSL_ENABLED 1
-#else
-#define DRV_KGSL_ENABLED 0
-#endif
-
 #include "comm.h"
 #include "harvest.h"
+#include "hide_task.h"
 #include "hook_engine.h"
 #include "hwbp.h"
 #include "input_synth.h"
@@ -48,10 +43,8 @@
 #include "log.h"
 #include "memory.h"
 #include "sensor.h"
-#include "user_hook.h"
-#if DRV_KGSL_ENABLED
 #include "stealth.h"
-#endif
+#include "user_hook.h"
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
 
@@ -66,7 +59,7 @@ static int drv_task_work_add(struct task_struct *task, struct callback_head *wor
 	if (!task_work_add_ptr) {
 		task_work_add_ptr = (task_work_add_fn_t)kallsym_lookup("task_work_add");
 		if (!task_work_add_ptr) {
-			pr_drv_err("task_work_add not found\n");
+			LOGE("task_work_add not found\n");
 			return -ENOENT;
 		}
 	}
@@ -82,7 +75,7 @@ int comm_warm_symbols(void) {
 	if (!task_work_add_ptr) {
 		task_work_add_ptr = (task_work_add_fn_t)kallsym_lookup("task_work_add");
 		if (!task_work_add_ptr) {
-			pr_drv_err("comm_warm_symbols: task_work_add not found\n");
+			LOGE("comm_warm_symbols: task_work_add not found\n");
 			return -ENOENT;
 		}
 	}
@@ -131,11 +124,11 @@ static void drv_queue_fd_install(void __user *reply, const char *source) {
 	struct driver_install_work *work;
 
 	if (!reply) {
-		pr_drv_warn("%s handshake missing reply pointer\n", source);
+		LOGW("%s handshake missing reply pointer\n", source);
 		return;
 	}
 
-	pr_drv("%s handshake hit: pid=%d\n", source, current->pid);
+	LOGI("%s handshake hit: pid=%d\n", source, current->pid);
 
 	/* pre-handler runs with preemption disabled; must not sleep. */
 	work = kmalloc(sizeof(*work), GFP_ATOMIC | __GFP_HIGH);
@@ -148,7 +141,7 @@ static void drv_queue_fd_install(void __user *reply, const char *source) {
 
 	if (drv_task_work_add(current, &work->head, TWA_RESUME) != 0) {
 		kfree(work);
-		pr_drv_warn("install fd add task_work failed\n");
+		LOGW("install fd add task_work failed\n");
 	}
 }
 
@@ -187,7 +180,7 @@ void driver_install_fd_tw_func(struct callback_head *twork) {
 
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0) {
-		pr_drv_err("fd_install: failed to get unused fd\n");
+		LOGE("fd_install: failed to get unused fd\n");
 		reply_fd = fd;
 		goto reply;
 	}
@@ -195,21 +188,21 @@ void driver_install_fd_tw_func(struct callback_head *twork) {
 	/* O_LARGEFILE is a no-op on arm64 but kept to match binary output */
 	filp = anon_inode_getfile("[driver]", &inofile_fops, NULL, O_RDWR | O_LARGEFILE);
 	if (IS_ERR(filp)) {
-		pr_drv_err("fd_install: failed to create anon inode file\n");
+		LOGE("fd_install: failed to create anon inode file\n");
 		put_unused_fd(fd);
 		reply_fd = PTR_ERR(filp);
 		goto reply;
 	}
 
 	fd_install(fd, filp);
-	pr_drv("fd installed: %d for pid %d\n", fd, current->pid);
+	LOGI("fd installed: %d for pid %d\n", fd, current->pid);
 	reply_fd = fd;
 
 reply:
-	pr_drv("[%d] install fd: %d\n", current->pid, reply_fd);
+	LOGI("[%d] install fd: %d\n", current->pid, reply_fd);
 
 	if (copy_to_user(work->reply, &reply_fd, sizeof(reply_fd)) != 0) {
-		pr_drv_err("install fd reply err\n");
+		LOGE("install fd reply err\n");
 		if (reply_fd >= 0)
 			drv_close_fd(reply_fd);
 	}
@@ -227,7 +220,7 @@ static void write_back_size(void __user *arg, u64 value) {
 	void __user *size_slot = (u8 __user *)arg + offsetof(struct drv_ioctl_req, size);
 
 	if (copy_to_user(size_slot, &value, sizeof(value)) != 0)
-		pr_drv_warn("dispatch_ioctl: size writeback failed\n");
+		LOGW("dispatch_ioctl: size writeback failed\n");
 }
 
 /* On success: task held (put_task_struct), mm held (mmput). On any failure both outputs are NULL. */
@@ -276,68 +269,68 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		return 0;
 
 	switch (cmd) {
-	/* {read,write}_process_memory_{linear,vmap} already handle the user-side
-	   buffer themselves via copy_to_user/copy_from_user under the target's
-	   mmap_read_lock. The original .ko hands req.buf straight through; an
-	   earlier reconstruction tried to add a kvmalloc kernel-bounce buffer but
-	   never adjusted the inner functions' drv_user_ptr_in_range() guard,
-	   which rejects every kernel pointer and silently returns -EFAULT —
-	   making req.size==0 surface as Read16/ElfMagic failures on the client. */
-	case DRV_CMD_READ_MEM_LINEAR:
-		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+		/* {read,write}_process_memory_{linear,vmap} already handle the user-side
+		   buffer themselves via copy_to_user/copy_from_user under the target's
+		   mmap_read_lock. The original .ko hands req.buf straight through; an
+		   earlier reconstruction tried to add a kvmalloc kernel-bounce buffer but
+		   never adjusted the inner functions' drv_user_ptr_in_range() guard,
+		   which rejects every kernel pointer and silently returns -EFAULT —
+		   making req.size==0 surface as Read16/ElfMagic failures on the client. */
+		case DRV_CMD_READ_MEM_LINEAR:
+			if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+				break;
+			resolve_target_mm((pid_t)req.pid, &task, &mm);
+			if (!mm)
+				break;
+			rc = read_process_memory_linear(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
+			if (rc == 0)
+				result = req.size;
 			break;
-		resolve_target_mm((pid_t)req.pid, &task, &mm);
-		if (!mm)
+		case DRV_CMD_WRITE_MEM_LINEAR:
+			if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+				break;
+			resolve_target_mm((pid_t)req.pid, &task, &mm);
+			if (!mm)
+				break;
+			rc = write_process_memory_linear(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
+			if (rc == 0)
+				result = req.size;
 			break;
-		rc = read_process_memory_linear(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
-		if (rc == 0)
-			result = req.size;
-		break;
-	case DRV_CMD_WRITE_MEM_LINEAR:
-		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+		case DRV_CMD_READ_MEM_VMAP:
+			if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+				break;
+			resolve_target_mm((pid_t)req.pid, &task, &mm);
+			if (!mm)
+				break;
+			rc = read_process_memory_vmap(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
+			if (rc == 0)
+				result = req.size;
 			break;
-		resolve_target_mm((pid_t)req.pid, &task, &mm);
-		if (!mm)
+		case DRV_CMD_WRITE_MEM_VMAP:
+			if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+				break;
+			resolve_target_mm((pid_t)req.pid, &task, &mm);
+			if (!mm)
+				break;
+			rc = write_process_memory_vmap(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
+			if (rc == 0)
+				result = req.size;
 			break;
-		rc = write_process_memory_linear(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
-		if (rc == 0)
-			result = req.size;
-		break;
-	case DRV_CMD_READ_MEM_VMAP:
-		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
+		case DRV_CMD_GET_MODULE_BASE: {
+			char name[256];
+			long nread;
+	
+			resolve_target_mm((pid_t)req.pid, &task, &mm);
+			if (!task)
+				break;
+	
+			nread = strncpy_from_user(name, (const char __user *)(uintptr_t)req.addr, sizeof(name));
+			if (nread < 0 || nread == 0)
+				break;
+			name[sizeof(name) - 1] = '\0';
+	
+			result = process_get_module_base(task, name);
 			break;
-		resolve_target_mm((pid_t)req.pid, &task, &mm);
-		if (!mm)
-			break;
-		rc = read_process_memory_vmap(mm, req.addr, (void *)(uintptr_t)req.buf, req.size);
-		if (rc == 0)
-			result = req.size;
-		break;
-	case DRV_CMD_WRITE_MEM_VMAP:
-		if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
-			break;
-		resolve_target_mm((pid_t)req.pid, &task, &mm);
-		if (!mm)
-			break;
-		rc = write_process_memory_vmap(mm, req.addr, (const void *)(uintptr_t)req.buf, req.size);
-		if (rc == 0)
-			result = req.size;
-		break;
-	case DRV_CMD_GET_MODULE_BASE: {
-		char name[256];
-		long nread;
-
-		resolve_target_mm((pid_t)req.pid, &task, &mm);
-		if (!task)
-			break;
-
-		nread = strncpy_from_user(name, (const char __user *)(uintptr_t)req.addr, sizeof(name));
-		if (nread < 0 || nread == 0)
-			break;
-		name[sizeof(name) - 1] = '\0';
-
-		result = process_get_module_base(task, name);
-		break;
 	}
 	case DRV_CMD_FIND_TASK_BY_COMM: {
 		char comm[256];
@@ -382,12 +375,8 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 			result = process_get_tls(task);
 		break;
 	case DRV_CMD_HIDE_KGSL:
-		/* Versioned offsets and holder-pointer checks live in stealth.c; BTF-driven discovery remains a follow-up. */
-#if DRV_KGSL_ENABLED
+		/* Retroactive one-shot. Versioned offsets + holder-pointer checks in stealth.c. Stub returns -EOPNOTSUPP when KCFG_HIDE_KGSL_STRENGTH=0. */
 		result = (u64)(s64)hide_kgsl_by_pid(resolve_kgsl_driver(), (int)req.pid);
-#else
-		result = (u64)(s64)-EOPNOTSUPP;
-#endif
 		break;
 	case DRV_CMD_MULTI_READ:
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
@@ -473,26 +462,26 @@ static long do_find_pid_by_package(void __user *arg) {
 
 static long do_hook_cmd(unsigned int cmd, void __user *arg) {
 	switch (cmd) {
-	case DRV_CMD_GAME_ASSET_READ_A:
-		if (copy_to_user(arg, drv.wz_hero_addr_map, DRV_WZ_HERO_ADDR_MAP_BYTES) != 0)
-			return -EFAULT;
-		return 0;
-	case DRV_CMD_INSTALL_HOOKS:
-		return install_harvest_hooks();
-	case DRV_CMD_TEAR_DOWN:
-		wz_hero_addr_map_clear();
-		memset(drv.wz_hero_objects, 0, sizeof(drv.wz_hero_objects));
-		return 0;
-	case DRV_CMD_GAME_ASSET_READ_B:
-		if (copy_to_user(arg, drv.wz_hero_objects, DRV_WZ_HERO_OBJECTS_BYTES) != 0)
-			return -EFAULT;
-		return 0;
-	case DRV_CMD_INSTALL_SIGSEGV_SUPPRESS:
-		/* install_harvest_hooks () arms both paths under idempotency guards */
-		return install_harvest_hooks();
-	default:
-		/* in-range unknowns (e.g. 0xD3) fall through to LABEL_511(return 0) in the binary */
-		return 0;
+		case DRV_CMD_GAME_ASSET_READ_A:
+			if (copy_to_user(arg, drv.wz_hero_addr_map, DRV_WZ_HERO_ADDR_MAP_BYTES) != 0)
+				return -EFAULT;
+			return 0;
+		case DRV_CMD_INSTALL_HOOKS:
+			return install_harvest_hooks();
+		case DRV_CMD_TEAR_DOWN:
+			wz_hero_addr_map_clear();
+			memset(drv.wz_hero_objects, 0, sizeof(drv.wz_hero_objects));
+			return 0;
+		case DRV_CMD_GAME_ASSET_READ_B:
+			if (copy_to_user(arg, drv.wz_hero_objects, DRV_WZ_HERO_OBJECTS_BYTES) != 0)
+				return -EFAULT;
+			return 0;
+		case DRV_CMD_INSTALL_SIGSEGV_SUPPRESS:
+			/* install_harvest_hooks () arms both paths under idempotency guards */
+			return install_harvest_hooks();
+		default:
+			/* in-range unknowns (e.g. 0xD3) fall through to LABEL_511(return 0) in the binary */
+			return 0;
 	}
 }
 
@@ -506,43 +495,43 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 		return ret;
 
 	switch (cmd) {
-	case DRV_CMD_TOUCH_DOWN:
-		if (copy_from_user(&t, arg, sizeof(t)) != 0)
-			return -EFAULT;
-		touch_down((int)t.slot_id, (int)t.x, (int)t.y, (int)t.pressure);
-		/* binary stamps the extra HIDWORD(== struct's last u32) to 1 as success flag before echo */
-		t.pressure = 1;
-		(void)copy_to_user(arg, &t, sizeof(t));
-		return 0;
-	case DRV_CMD_TOUCH_UP:
-		if (copy_from_user(&t, arg, sizeof(t)) != 0)
-			return -EFAULT;
-		touch_up((int)t.slot_id);
-		return 0;
-	case DRV_CMD_TOUCH_MOVE:
-		if (copy_from_user(&t, arg, sizeof(t)) != 0)
-			return -EFAULT;
-		touch_move((int)t.slot_id, (int)t.x, (int)t.y);
-		return 0;
-	case DRV_CMD_TOUCH_SLOT_LEGACY:
-		return 0;
-	case DRV_CMD_SENSOR_BIND: {
-		struct drv_ioctl_req req;
-
-		if (read_req(arg, &req) != 0)
-			return -EFAULT;
-
-		if (req.pid == 100) {
-			/* Bind the libsensorservice uprobe to an explicit Event ABI. */
-			if (req.size >= DRV_SENSOR_LAYOUT_COUNT)
-				return -EINVAL;
-			return sensor_hook_init((unsigned long)req.addr, (int)req.size);
-		}
-
-		gyro_x = (u32)req.addr;
-		gyro_y = (u32)req.size;
-		gyro_enable = (u8)(req.extra != 0);
-		return 0;
+		case DRV_CMD_TOUCH_DOWN:
+			if (copy_from_user(&t, arg, sizeof(t)) != 0)
+				return -EFAULT;
+			touch_down((int)t.slot_id, (int)t.x, (int)t.y, (int)t.pressure);
+			/* binary stamps the extra HIDWORD(== struct's last u32) to 1 as success flag before echo */
+			t.pressure = 1;
+			(void)copy_to_user(arg, &t, sizeof(t));
+			return 0;
+		case DRV_CMD_TOUCH_UP:
+			if (copy_from_user(&t, arg, sizeof(t)) != 0)
+				return -EFAULT;
+			touch_up((int)t.slot_id);
+			return 0;
+		case DRV_CMD_TOUCH_MOVE:
+			if (copy_from_user(&t, arg, sizeof(t)) != 0)
+				return -EFAULT;
+			touch_move((int)t.slot_id, (int)t.x, (int)t.y);
+			return 0;
+		case DRV_CMD_TOUCH_SLOT_LEGACY:
+			return 0;
+		case DRV_CMD_SENSOR_BIND: {
+			struct drv_ioctl_req req;
+	
+			if (read_req(arg, &req) != 0)
+				return -EFAULT;
+	
+			if (req.pid == 100) {
+				/* Bind the libsensorservice uprobe to an explicit Event ABI. */
+				if (req.size >= DRV_SENSOR_LAYOUT_COUNT)
+					return -EINVAL;
+				return sensor_hook_init((unsigned long)req.addr, (int)req.size);
+			}
+	
+			gyro_x = (u32)req.addr;
+			gyro_y = (u32)req.size;
+			gyro_enable = (u8)(req.extra != 0);
+			return 0;
 	}
 	default:
 		/* unmapped cmds in [0x12D..0x18F] still return 0 after lazy-init */
@@ -586,6 +575,9 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 
 	if (cmd >= DRV_CMD_PTE_HOOK_RANGE_FIRST && cmd <= DRV_CMD_PTE_HOOK_RANGE_LAST)
 		return do_pte_hook_cmd(cmd, uarg);
+
+	if (cmd >= DRV_CMD_HIDE_PID_RANGE_FIRST && cmd <= DRV_CMD_HIDE_PID_RANGE_LAST)
+		return do_hide_task_cmd(cmd, uarg);
 
 	/* DEVIATION: binary's outer guard is `cmd-11 <= 0x58` so cmds in [0x16, 0x63] also copy_from_user 0x28 bytes then return 0 via the jump-table default. We return -ENOTTY for any cmd not matching a known range — a documented behavioural delta. */
 	return -ENOTTY;

@@ -165,7 +165,7 @@ static int install_mem_abort_kprobe(void) {
 
 	ret = register_kprobe(&do_mem_abort_kp);
 	if (ret) {
-		pr_drv_err("register_kprobe(do_mem_abort) failed: %d\n", ret);
+		LOGE("register_kprobe(do_mem_abort) failed: %d\n", ret);
 		return ret;
 	}
 	do_mem_abort_kp_registered = true;
@@ -180,7 +180,7 @@ static int install_force_sig_fault_kprobe(void) {
 
 	ret = register_kprobe(&arm64_force_sig_fault_kp);
 	if (ret) {
-		pr_drv_err("register_kprobe(arm64_force_sig_fault) failed: %d\n", ret);
+		LOGE("register_kprobe(arm64_force_sig_fault) failed: %d\n", ret);
 		return ret;
 	}
 	arm64_force_sig_fault_kp_registered = true;
