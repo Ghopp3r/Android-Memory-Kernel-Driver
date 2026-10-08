@@ -78,16 +78,32 @@ static drv_insn_patch_text_nosync_fn_t drv_insn_patch_text_nosync;
 typedef int (*drv_get_cmdline_fn_t)(struct task_struct *task, char *buffer, int buflen);
 static drv_get_cmdline_fn_t drv_get_cmdline;
 
-/* CFI-safe trampoline: kallsyms-resolved target was not built with matching CFI metadata. */
-static __nocfi int drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn_t fn, void *addr, u32 insn) {
-	return fn(addr, insn);
+/* anon_vma_name is not always exported to modules on GKI; resolve via kallsyms. */
+typedef struct anon_vma_name *(*drv_anon_vma_name_fn_t)(struct vm_area_struct *vma);
+static drv_anon_vma_name_fn_t drv_anon_vma_name;
+
+/* CFI-safe wrapper: kallsyms-resolved target may not have matching CFI metadata. */
+static noinline __nocfi struct anon_vma_name *
+drv_call_anon_vma_name(drv_anon_vma_name_fn_t fn, struct vm_area_struct *vma)
+{
+	return fn(vma);
 }
 
 static noinline __nocfi int drv_call_get_cmdline(drv_get_cmdline_fn_t fn, struct task_struct *task, char *buffer, int buflen) { return fn(task, buffer, buflen); }
-
+/* CFI-safe wrapper: kallsyms-resolved target was not built with matching CFI metadata. */
+static noinline __nocfi int
+drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn_t fn, void *addr, u32 insn)
+{
+	return fn(addr, insn);
+}
 int memory_init(void) {
 	unsigned long addr;
-
+	addr = kallsym_lookup("anon_vma_name");
+	if (!addr) {
+		LOGW("memory_init: anon_vma_name not in kallsyms; VMA name matching disabled\n");
+	} else {
+		drv_anon_vma_name = (drv_anon_vma_name_fn_t)addr;
+	}
 	addr = kallsym_lookup("aarch64_insn_patch_text_nosync");
 	if (!addr) {
 #if PAGE_SHIFT == 12
@@ -935,6 +951,9 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 	if (!task || !needle || !*needle)
 		return 0;
 
+	if (!drv_anon_vma_name)
+		return 0;
+
 	nlen = strnlen(needle, 80);
 
 	mm = get_task_mm(task);
@@ -950,7 +969,7 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 #else
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 #endif
-		struct anon_vma_name *avn = anon_vma_name(vma);
+		struct anon_vma_name *avn = drv_call_anon_vma_name(drv_anon_vma_name, vma);
 		if (avn && strncmp(avn->name, needle, nlen) == 0 && avn->name[nlen] == '\0') {
 			cookie = (u64)vma->vm_start;
 			break;

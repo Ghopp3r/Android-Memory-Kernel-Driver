@@ -34,8 +34,23 @@ enum drv_sensor_layout {
 	DRV_SENSOR_LAYOUT_AIDL_V1 = 1,
 	DRV_SENSOR_LAYOUT_COUNT,
 };
+#define DRV_SENSOR_PATH_MAX 128
 
+struct drv_sensor_bind_req {
+    char path[DRV_SENSOR_PATH_MAX];
+    uint64_t probe_offset;
+    uint32_t layout_profile;
+    uint32_t reserved;
+};
 /* Raw ioctl commands. */
+
+struct drv_sensor_write_req {
+    uint32_t gyro_x_bits;
+    uint32_t gyro_y_bits;
+    uint32_t enable;
+    uint32_t reserved;
+};
+
 enum drv_cmd {
 	DRV_CMD_READ_MEM_LINEAR = 0x0B,
 	DRV_CMD_WRITE_MEM_LINEAR = 0x0C,
@@ -50,6 +65,11 @@ enum drv_cmd {
 	DRV_CMD_HIDE_KGSL = 0x13,
 	DRV_CMD_MULTI_READ = 0x14,
 	DRV_CMD_DUMP_VMAS = 0x15,
+	/* pid == 100 binds a sensor uprobe; otherwise this updates gyro values. */
+    DRV_CMD_SENSOR_BIND = 0x140,
+
+/* Set gyro_x / gyro_y / enable. Payload is struct drv_sensor_write_req. */
+    DRV_CMD_SENSOR_WRITE = 0x141,
 	/* Exact argv[0] lookup using drv_find_pid_req. */
 	DRV_CMD_FIND_PID_BY_PACKAGE = 0x16,
 	/* Writes APGA keys to req.size (lo) and req.extra (hi). */
@@ -70,7 +90,7 @@ enum drv_cmd {
 	DRV_CMD_TOUCH_SLOT_LEGACY = 0x136,
 
 	/* pid == 100 binds a sensor uprobe; otherwise this updates gyro values. */
-	DRV_CMD_SENSOR_BIND = 0x140,
+
 
 	/* These values enter the lazy input initialization path. */
 	DRV_CMD_INPUT_RANGE_FIRST = 0x12D,

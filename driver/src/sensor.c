@@ -5,10 +5,12 @@
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/kernel.h>
 #include <linux/mutex.h>
 #include <linux/namei.h>
 #include <linux/path.h>
 #include <linux/ptrace.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/uprobes.h>
@@ -30,7 +32,6 @@
 
 /* x0 is const Event&, not sensors_event_t*. */
 /* HIDL: untagged payload at +0x10. AIDL: tag at +0x10, aligned value at +0x18. */
-/* Both keep SensorType at +0x0c. */
 struct sensor_abi_layout {
 	u8 type_off;
 	u8 data_off;
@@ -54,63 +55,200 @@ static const struct sensor_abi_layout layouts[DRV_SENSOR_LAYOUT_COUNT] = {
 	},
 };
 
-static int active_layout_profile = -1;
+#define SENSOR_MAX_PROBES 8
+
+struct sensor_slot {
+	struct uprobe_consumer uc;
+	struct inode *inode;
+	unsigned long offset;
+	int layout_profile;
+	bool armed;
+};
+
+static struct sensor_slot sensor_slots[SENSOR_MAX_PROBES];
+static DEFINE_MUTEX(sensor_bind_lock);
 
 u8 gyro_enable;
 u32 gyro_x;
 u32 gyro_y;
 
-static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs);
+/* ---------------- kallsym-resolved kernel helpers ---------------- */
 
-static struct uprobe_consumer uc = {
-	.handler = handler_pre_thunk,
-};
+/* kern_path / path_put are not in __ksymtab; resolve at runtime like uprobe_register. */
+typedef int  (*kern_path_fn_t)(const char *name, unsigned int flags, struct path *path);
+typedef void (*path_put_fn_t)(const struct path *path);
+
+static kern_path_fn_t kern_path_ptr;
+static path_put_fn_t  path_put_ptr;
+
+static noinline __nocfi int
+drv_call_kern_path(kern_path_fn_t fn, const char *name, unsigned int flags,
+		   struct path *path)
+{
+	return fn(name, flags, path);
+}
+
+static noinline __nocfi void
+drv_call_path_put(path_put_fn_t fn, const struct path *path)
+{
+	fn(path);
+}
+
+static int drv_kern_path(const char *name, struct path *path)
+{
+	if (!kern_path_ptr) {
+		kern_path_ptr = (kern_path_fn_t)kallsym_lookup("kern_path");
+		if (!kern_path_ptr) {
+			LOGE("kern_path not found\n");
+			return -ENOENT;
+		}
+	}
+	return drv_call_kern_path(kern_path_ptr, name, LOOKUP_FOLLOW, path);
+}
+
+static void drv_path_put(const struct path *path)
+{
+	if (!path_put_ptr) {
+		path_put_ptr = (path_put_fn_t)kallsym_lookup("path_put");
+		if (!path_put_ptr) {
+			LOGE("path_put not found\n");
+			return;
+		}
+	}
+	drv_call_path_put(path_put_ptr, path);
+}
+
+/* ---------------- uprobe_register wrapper ---------------- */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
-typedef struct uprobe *(*uprobe_register_fn_t)(struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *consumer);
+typedef struct uprobe *(*uprobe_register_fn_t)(struct inode *inode, loff_t offset,
+					       loff_t ref_ctr_offset,
+					       struct uprobe_consumer *consumer);
 static uprobe_register_fn_t uprobe_register_ptr;
 
-static noinline __nocfi struct uprobe *drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode, loff_t offset, loff_t ref_ctr_offset, struct uprobe_consumer *consumer) {
+static noinline __nocfi struct uprobe *
+drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode,
+			 loff_t offset, loff_t ref_ctr_offset,
+			 struct uprobe_consumer *consumer)
+{
 	return fn(inode, offset, ref_ctr_offset, consumer);
 }
 
-static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+static int drv_uprobe_register(struct inode *inode, loff_t offset,
+			       struct uprobe_consumer *consumer)
+{
 	struct uprobe *uprobe;
 
 	if (!uprobe_register_ptr) {
-		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
+		uprobe_register_ptr =
+			(uprobe_register_fn_t)kallsym_lookup("uprobe_register");
 		if (!uprobe_register_ptr) {
 			LOGE("uprobe_register not found\n");
 			return -ENOENT;
 		}
 	}
 
-	uprobe = drv_call_uprobe_register(uprobe_register_ptr, inode, offset, 0, consumer);
+	uprobe = drv_call_uprobe_register(uprobe_register_ptr, inode, offset, 0,
+					  consumer);
 	return PTR_ERR_OR_ZERO(uprobe);
 }
 #else
-typedef int (*uprobe_register_fn_t)(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer);
+typedef int (*uprobe_register_fn_t)(struct inode *inode, loff_t offset,
+				    struct uprobe_consumer *consumer);
 static uprobe_register_fn_t uprobe_register_ptr;
 
-static noinline __nocfi int drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+static noinline __nocfi int
+drv_call_uprobe_register(uprobe_register_fn_t fn, struct inode *inode,
+			 loff_t offset, struct uprobe_consumer *consumer)
+{
 	return fn(inode, offset, consumer);
 }
 
-static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe_consumer *consumer) {
+static int drv_uprobe_register(struct inode *inode, loff_t offset,
+			       struct uprobe_consumer *consumer)
+{
 	if (!uprobe_register_ptr) {
-		uprobe_register_ptr = (uprobe_register_fn_t)kallsym_lookup("uprobe_register");
+		uprobe_register_ptr =
+			(uprobe_register_fn_t)kallsym_lookup("uprobe_register");
 		if (!uprobe_register_ptr) {
 			LOGE("uprobe_register not found\n");
 			return -ENOENT;
 		}
 	}
 
-	return drv_call_uprobe_register(uprobe_register_ptr, inode, offset, consumer);
+	return drv_call_uprobe_register(uprobe_register_ptr, inode, offset,
+					consumer);
 }
 #endif
 
-/* Pure-integer IEEE-754 binary32 add; kernel FPSIMD is off-limits in a uprobe pre-handler. */
-/* Quirks: NaN -> +qNaN 0x7FFFFFFF, exact cancellation -> +0, RNE, implicit-1 at bit 30. */
+/* ---------------- handler ---------------- */
+
+int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs)
+{
+	struct sensor_slot *slot = container_of(self, struct sensor_slot, uc);
+	const struct sensor_abi_layout *layout;
+	unsigned long user_ptr;
+	u32 sensor_type = 0;
+	u32 payload_tag = 0;
+	u32 xy[2] = { 0, 0 };
+
+	if (gyro_enable == 0)
+		return 0;
+	if (gyro_x == 0 && gyro_y == 0)
+		return 0;
+	if (!regs)
+		return 0;
+
+	if (slot->layout_profile < 0 ||
+	    slot->layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
+		return 0;
+	layout = &layouts[slot->layout_profile];
+
+	/* On ARM64 pt_regs starts with the GPR array; regs[0] == x0. */
+	user_ptr = regs->regs[0];
+	if (!user_ptr)
+		return 0;
+
+	/* SensorType::GYROSCOPE == 4 in both HIDL V1.0 and sensors AIDL. */
+	if (copy_from_user(&sensor_type,
+			   (void __user *)(user_ptr + layout->type_off),
+			   sizeof(sensor_type)) != 0) {
+
+		return 0;
+	}
+
+	if (sensor_type != 4)
+		return 0;
+
+	/* AIDL EventPayload is a tagged union; refuse to reinterpret another
+	 * active member as Vec3. */
+	if (layout->has_tag) {
+		if (copy_from_user(&payload_tag,
+				   (void __user *)(user_ptr + layout->tag_off),
+				   sizeof(payload_tag)) != 0)
+			return 0;
+
+		if (payload_tag != layout->tag_value)
+			return 0;
+	}
+
+	if (copy_from_user(xy, (void __user *)(user_ptr + layout->data_off),
+			   sizeof(xy)) != 0)
+		return 0;
+
+	xy[0] = fadd(xy[0], gyro_x);
+	xy[1] = fadd(xy[1], gyro_y);
+
+	if (copy_to_user((void __user *)(user_ptr + layout->data_off), xy,
+			 sizeof(xy)) != 0) {
+		return 0;
+	}
+
+	return 0;
+}
+
+/* ---------------- fadd (unchanged) ---------------- */
+
 u32 fadd(u32 a, u32 b) {
 	u32 mant_a, mant_b;
 	u32 sig_a, sig_b;
@@ -313,116 +451,71 @@ u32 fadd(u32 a, u32 b) {
 	return result;
 }
 
-int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
-	const struct sensor_abi_layout *layout;
-	int layout_profile;
-	unsigned long user_ptr;
-	u32 sensor_type = 0;
-	u32 payload_tag = 0;
-	u32 xy[2] = { 0, 0 };
-	u32 new_y;
+/* ---------------- write path ---------------- */
 
-	(void)self;
-
-	if (gyro_enable == 0)
-		return 0;
-	if (gyro_x == 0 && gyro_y == 0)
-		return 0;
-	if (!regs)
-		return 0;
-
-	layout_profile = READ_ONCE(active_layout_profile);
-	if (layout_profile < 0 || layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
-		return 0;
-	layout = &layouts[layout_profile];
-
-	/* On ARM64 pt_regs starts with the GPR array; regs[0] == x0. */
-	user_ptr = regs->regs[0];
-	if (!user_ptr)
-		return 0;
-
-	/* SensorType::GYROSCOPE == 4 in both HIDL V1.0 and sensors AIDL. */
-	if (copy_from_user(&sensor_type,
-			   (void __user *)(user_ptr + layout->type_off),
-			   sizeof(sensor_type)) != 0) {
-		LOGE("sensor_hook copy_from_user failed\n");
-		return 0;
-	}
-	if (sensor_type != 4)
-		return 0;
-
-	/* AIDL EventPayload is a tagged union; refuse to reinterpret another active member as Vec3. */
-	if (layout->has_tag) {
-		if (copy_from_user(&payload_tag,
-				   (void __user *)(user_ptr + layout->tag_off),
-				   sizeof(payload_tag)) != 0) {
-			LOGE("sensor_hook copy_from_user failed\n");
-			return 0;
-		}
-		if (payload_tag != layout->tag_value)
-			return 0;
-	}
-
-	if (copy_from_user(xy, (void __user *)(user_ptr + layout->data_off),
-			   sizeof(xy)) != 0) {
-		LOGE("sensor_hook copy_from_user failed\n");
-		return 0;
-	}
-
-	xy[0] = fadd(xy[0], gyro_x);
-	new_y = fadd(xy[1], gyro_y);
-	xy[1] = new_y;
-
-	if (copy_to_user((void __user *)(user_ptr + layout->data_off), xy,
-			 sizeof(xy)) != 0) {
-		LOGE("sensor_hook copy_to_user failed\n");
-		return 0;
-	}
-
-	return 0;
+void sensor_hook_write(u32 x_bits, u32 y_bits, u32 enable)
+{
+	WRITE_ONCE(gyro_x, x_bits);
+	WRITE_ONCE(gyro_y, y_bits);
+	WRITE_ONCE(gyro_enable, enable ? 1u : 0u);
 }
 
-static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs) {
-	return handler_pre(self, regs);
+/* ---------------- slot management ---------------- */
+
+static struct sensor_slot *sensor_find_free_slot(void)
+{
+	int i;
+	for (i = 0; i < SENSOR_MAX_PROBES; i++)
+		if (!sensor_slots[i].armed)
+			return &sensor_slots[i];
+	return NULL;
 }
 
-/* Second bind on the same (inode, offset) deadlocks uprobe_register on 6.6; gate on first-success. */
-static bool uprobe_armed;
-static unsigned long armed_probe_offset;
-static int armed_layout_profile = -1;
-static DEFINE_MUTEX(sensor_bind_lock);
+static struct sensor_slot *sensor_find_duplicate(struct inode *inode,
+						 unsigned long offset)
+{
+	int i;
+	for (i = 0; i < SENSOR_MAX_PROBES; i++)
+		if (sensor_slots[i].armed &&
+		    sensor_slots[i].inode == inode &&
+		    sensor_slots[i].offset == offset)
+			return &sensor_slots[i];
+	return NULL;
+}
 
-int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
-	struct path path;
+int sensor_hook_init(const char *path, unsigned long probe_offset,
+		     int layout_profile)
+{
+	struct path kpath;
 	struct dentry *dentry;
 	struct inode *inode;
+	struct sensor_slot *slot;
 	int ret;
 
-	if (layout_profile < 0 || layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
+	if (!path || layout_profile < 0 ||
+	    layout_profile >= DRV_SENSOR_LAYOUT_COUNT)
+		return -EINVAL;
+
+	if (path[0] == '\0')
 		return -EINVAL;
 
 	mutex_lock(&sensor_bind_lock);
 
-	if (uprobe_armed) {
-		ret = (armed_probe_offset == probe_offset && armed_layout_profile == layout_profile) ? 0 : -EBUSY;
-		goto out_unlock;
-	}
+	kpath.mnt = NULL;
+	kpath.dentry = NULL;
 
-	path.mnt = NULL;
-	path.dentry = NULL;
-
-	ret = kern_path(SENSOR_TARGET_SO, LOOKUP_FOLLOW, &path);
+	ret = drv_kern_path(path, &kpath);
 	if (ret != 0) {
-		LOGE("kern_path failed: %d\n", ret);
+		LOGE("kern_path(%s) failed: %d\n", path, ret);
 		goto out_unlock;
 	}
 
-	dentry = path.dentry;
+	dentry = kpath.dentry;
 
-	/* DCACHE_OP_REAL => overlayfs/union; ->d_real reaches the inode whose pages the uprobe patches. */
+	/* DCACHE_OP_REAL => overlayfs/union; ->d_real reaches the inode whose
+	 * pages the uprobe patches. */
 	if (dentry->d_flags & DCACHE_OP_REAL) {
 		struct dentry *real;
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 		real = d_real(dentry, D_REAL_DATA);
 #else
@@ -434,18 +527,43 @@ int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 
 	inode = dentry->d_inode;
 
-	ret = drv_uprobe_register(inode, probe_offset, &uc);
-	if (ret != 0)
-		LOGE("uprobe_register failed: %d\n", ret);
-	else {
-		/* Publish layout after register succeeds; a racing handler sees -1 and skips. */
-		WRITE_ONCE(active_layout_profile, layout_profile);
-		armed_probe_offset = probe_offset;
-		armed_layout_profile = layout_profile;
-		uprobe_armed = true;
+	if (sensor_find_duplicate(inode, probe_offset)) {
+		LOGE("sensor dup: %s+0x%lx already armed\n",
+		     path, probe_offset);
+		ret = 0;
+		drv_path_put(&kpath);
+		goto out_unlock;
 	}
 
-	path_put(&path);
+	slot = sensor_find_free_slot();
+	if (!slot) {
+		LOGE("sensor: no free slot for %s+0x%lx\n",
+		     path, probe_offset);
+		ret = -ENOSPC;
+		drv_path_put(&kpath);
+		goto out_unlock;
+	}
+
+	memset(slot, 0, sizeof(*slot));
+	slot->uc.handler = handler_pre;
+	slot->inode = inode;
+	slot->offset = probe_offset;
+	slot->layout_profile = layout_profile;
+
+	ret = drv_uprobe_register(inode, probe_offset, &slot->uc);
+	if (ret != 0) {
+		LOGE("uprobe_register(%s, 0x%lx) failed: %d\n",
+		     path, probe_offset, ret);
+		drv_path_put(&kpath);
+		goto out_unlock;
+	}
+
+	slot->armed = true;
+	LOGE("sensor armed: %s+0x%lx layout=%d ino=%lu\n",
+	     path, probe_offset, layout_profile,
+	     (unsigned long)inode->i_ino);
+
+	drv_path_put(&kpath);
 
 out_unlock:
 	mutex_unlock(&sensor_bind_lock);

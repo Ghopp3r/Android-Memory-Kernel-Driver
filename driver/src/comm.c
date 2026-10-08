@@ -528,23 +528,20 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 		case DRV_CMD_TOUCH_SLOT_LEGACY:
 			return 0;
 		case DRV_CMD_SENSOR_BIND: {
-			struct drv_ioctl_req req;
-	
-			if (read_req(arg, &req) != 0)
-				return -EFAULT;
-	
-			if (req.pid == 100) {
-				/* Bind the libsensorservice uprobe to an explicit Event ABI. */
-				if (req.size >= DRV_SENSOR_LAYOUT_COUNT)
-					return -EINVAL;
-				return sensor_hook_init((unsigned long)req.addr, (int)req.size);
-			}
-	
-			gyro_x = (u32)req.addr;
-			gyro_y = (u32)req.size;
-			gyro_enable = (u8)(req.extra != 0);
-			return 0;
-	}
+    struct drv_sensor_bind_req sreq;
+    if (copy_from_user(&sreq, (void __user *)arg, sizeof(sreq)))
+        return -EFAULT;
+    sreq.path[DRV_SENSOR_PATH_MAX - 1] = '\0';
+    return sensor_hook_init(sreq.path, sreq.probe_offset, sreq.layout_profile);
+}
+case DRV_CMD_SENSOR_WRITE: {
+    struct drv_sensor_write_req wreq;
+    if (copy_from_user(&wreq, arg, sizeof(wreq)) != 0)
+        return -EFAULT;
+    sensor_hook_write(wreq.gyro_x_bits, wreq.gyro_y_bits, wreq.enable);
+    return 0;
+}
+
 	default:
 		/* unmapped cmds in [0x12D..0x18F] still return 0 after lazy-init */
 		return 0;

